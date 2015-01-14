@@ -1,4 +1,13 @@
+"""
+Utilities for validating inputs related to user objects.
+
+The validate_* methods in this file return simple messages that do not contain
+user inputs - so these methods do not need to be escaped.
+"""
+import logging
 import re
+
+log = logging.getLogger( __name__ )
 
 VALID_PUBLICNAME_RE = re.compile( "^[a-z0-9\-]+$" )
 VALID_PUBLICNAME_SUB = re.compile( "[^a-z0-9\-]" )

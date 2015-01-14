@@ -1,22 +1,20 @@
-from __future__ import with_statement
+from xml.etree import ElementTree, ElementInclude
 
 from copy import deepcopy
 import os
-
-from galaxy.util import parse_xml
 
 
 def load_tool(path):
     """
     Loads tool from file system and preprocesses tool macros.
     """
-    tree = parse_xml(path)
+    tree = raw_tool_xml_tree(path)
     root = tree.getroot()
 
     _import_macros(root, path)
 
     # Expand xml macros
-    macro_dict = _macros_of_type(root, 'xml', lambda el: list(el.getchildren()))
+    macro_dict = _macros_of_type(root, 'xml', lambda el: list(el))
     _expand_macros([root], macro_dict)
 
     # Expand tokens
@@ -38,18 +36,35 @@ def template_macro_params(root):
     return param_dict
 
 
+def raw_tool_xml_tree(path):
+    """ Load raw (no macro expansion) tree representation of tool represented
+    at the specified path.
+    """
+    tree = _parse_xml(path)
+    return tree
+
+
+def imported_macro_paths(root):
+    macros_el = _macros_el(root)
+    return _imported_macro_paths_from_el(macros_el)
+
+
 def _import_macros(root, path):
     tool_dir = os.path.dirname(path)
-    macros_el = root.find('macros')
-    if macros_el:
+    macros_el = _macros_el(root)
+    if macros_el is not None:
         macro_els = _load_macros(macros_el, tool_dir)
         _xml_set_children(macros_el, macro_els)
+
+
+def _macros_el(root):
+    return root.find('macros')
 
 
 def _macros_of_type(root, type, el_func):
     macros_el = root.find('macros')
     macro_dict = {}
-    if macros_el:
+    if macros_el is not None:
         macro_els = macros_el.findall('macro')
         macro_dict = dict([(macro_el.get("name"), el_func(macro_el)) \
             for macro_el in macro_els \
@@ -71,7 +86,7 @@ def _expand_tokens(elements, tokens):
             new_value = _expand_tokens_str(value, tokens)
             if not (new_value is value):
                 element.attrib[key] = new_value
-        _expand_tokens(list(element.getchildren()), tokens)
+        _expand_tokens(list(element), tokens)
 
 
 def _expand_tokens_str(str, tokens):
@@ -112,7 +127,7 @@ def _expand_macro(element, expand_el, macros):
 def _expand_yield_statements(macro_def, expand_el):
     yield_els = [yield_el for macro_def_el in macro_def for yield_el in macro_def_el.findall('.//yield')]
 
-    expand_el_children = expand_el.getchildren()
+    expand_el_children = list(expand_el)
     macro_def_parent_map = \
         dict((c, p) for macro_def_el in macro_def for p in macro_def_el.getiterator() for c in p)
 
@@ -134,7 +149,7 @@ def _load_embedded_macros(macros_el, tool_dir):
 
     macro_els = []
     # attribute typed macro
-    if macros_el:
+    if macros_el is not None:
         macro_els = macros_el.findall("macro")
     for macro in macro_els:
         if 'type' not in macro.attrib:
@@ -146,7 +161,7 @@ def _load_embedded_macros(macros_el, tool_dir):
     typed_tag = ['template', 'xml', 'token']
     for tag in typed_tag:
         macro_els = []
-        if macros_el:
+        if macros_el is not None:
             macro_els = macros_el.findall(tag)
         for macro_el in macro_els:
             macro_el.attrib['type'] = tag
@@ -159,13 +174,7 @@ def _load_embedded_macros(macros_el, tool_dir):
 def _load_imported_macros(macros_el, tool_dir):
     macros = []
 
-    macro_import_els = []
-    if macros_el:
-        macro_import_els = macros_el.findall("import")
-    for macro_import_el in macro_import_els:
-        raw_import_path = macro_import_el.text
-        tool_relative_import_path = \
-            os.path.basename(raw_import_path)  # Sanitize this
+    for tool_relative_import_path in _imported_macro_paths_from_el(macros_el):
         import_path = \
             os.path.join(tool_dir, tool_relative_import_path)
         file_macros = _load_macro_file(import_path, tool_dir)
@@ -174,14 +183,27 @@ def _load_imported_macros(macros_el, tool_dir):
     return macros
 
 
+def _imported_macro_paths_from_el(macros_el):
+    imported_macro_paths = []
+    macro_import_els = []
+    if macros_el is not None:
+        macro_import_els = macros_el.findall("import")
+    for macro_import_el in macro_import_els:
+        raw_import_path = macro_import_el.text
+        tool_relative_import_path = \
+            os.path.basename(raw_import_path)  # Sanitize this
+        imported_macro_paths.append( tool_relative_import_path )
+    return imported_macro_paths
+
+
 def _load_macro_file(path, tool_dir):
-    tree = parse_xml(path)
+    tree = _parse_xml(path)
     root = tree.getroot()
     return _load_macros(root, tool_dir)
 
 
 def _xml_set_children(element, new_children):
-    for old_child in element.getchildren():
+    for old_child in element:
         element.remove(old_child)
     for i, new_child in enumerate(new_children):
         element.insert(i, new_child)
@@ -192,7 +214,7 @@ def _xml_replace(query, targets, parent_map):
     parent_el = parent_map[query]
     matching_index = -1
     #for index, el in enumerate(parent_el.iter('.')):  ## Something like this for newer implementation
-    for index, el in enumerate(parent_el.getchildren()):
+    for index, el in enumerate(list(parent_el)):
         if el == query:
             matching_index = index
             break
@@ -202,3 +224,10 @@ def _xml_replace(query, targets, parent_map):
         current_index += 1
         parent_el.insert(current_index, deepcopy(target))
     parent_el.remove(query)
+
+
+def _parse_xml(fname):
+    tree = ElementTree.parse(fname)
+    root = tree.getroot()
+    ElementInclude.include(root)
+    return tree

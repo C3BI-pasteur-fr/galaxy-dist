@@ -1,4 +1,5 @@
 import os
+import re
 from StringIO import StringIO
 from galaxy.tools.parameters import grouping
 from galaxy.tools import test
@@ -9,7 +10,9 @@ from galaxy.util.odict import odict
 import galaxy.model
 from galaxy.model.orm import and_, desc
 from functional import database_contexts
-from json import dumps, loads
+from requests import get
+from requests import post
+from json import dumps
 
 from logging import getLogger
 log = getLogger( __name__ )
@@ -18,6 +21,7 @@ log = getLogger( __name__ )
 # and result in sqlite errors on larger tests or larger numbers of
 # tests.
 VERBOSE_ERRORS = util.asbool( os.environ.get( "GALAXY_TEST_VERBOSE_ERRORS", False ) )
+UPLOAD_ASYNC = util.asbool( os.environ.get( "GALAXY_TEST_UPLOAD_ASYNC", True ) )
 ERROR_MESSAGE_DATASET_SEP = "--------------------------------------"
 
 
@@ -30,10 +34,15 @@ def stage_data_in_history( galaxy_interactor, all_test_data, history, shed_tool_
     # Upload any needed files
     upload_waits = []
 
-    for test_data in all_test_data:
-        upload_waits.append( galaxy_interactor.stage_data_async( test_data, history, shed_tool_id ) )
-    for upload_wait in upload_waits:
-        upload_wait()
+    if UPLOAD_ASYNC:
+        for test_data in all_test_data:
+            upload_waits.append( galaxy_interactor.stage_data_async( test_data, history, shed_tool_id ) )
+        for upload_wait in upload_waits:
+            upload_wait()
+    else:
+        for test_data in all_test_data:
+            upload_wait = galaxy_interactor.stage_data_async( test_data, history, shed_tool_id )
+            upload_wait()
 
 
 class GalaxyInteractorApi( object ):
@@ -45,11 +54,12 @@ class GalaxyInteractorApi( object ):
         self.api_key = self.__get_user_key( twill_test_case.user_api_key, twill_test_case.master_api_key, test_user=test_user )
         self.uploads = {}
 
-    def verify_output( self, history_id, output_data, output_testdef, shed_tool_id, maxseconds ):
+    def verify_output( self, history_id, jobs, output_data, output_testdef, shed_tool_id, maxseconds ):
         outfile = output_testdef.outfile
         attributes = output_testdef.attributes
         name = output_testdef.name
-        self.wait_for_history( history_id, maxseconds )
+        for job in jobs:
+            self.wait_for_job( job[ 'id' ], history_id, maxseconds )
         hid = self.__output_id( output_data )
         fetcher = self.__dataset_fetcher( history_id )
         ## TODO: Twill version verifys dataset is 'ok' in here.
@@ -105,10 +115,18 @@ class GalaxyInteractorApi( object ):
     def wait_for_history( self, history_id, maxseconds ):
         self.twill_test_case.wait_for( lambda: not self.__history_ready( history_id ), maxseconds=maxseconds)
 
-    def get_job_stream( self, history_id, output_data, stream ):
-        hid = self.__output_id( output_data )
-        data = self._dataset_provenance( history_id, hid )
-        return data.get( stream, '' )
+    def wait_for_job( self, job_id, history_id, maxseconds ):
+        self.twill_test_case.wait_for( lambda: not self.__job_ready( job_id, history_id ), maxseconds=maxseconds)
+
+    def get_job_stdio( self, job_id ):
+        job_stdio = self.__get_job_stdio( job_id ).json()
+        return job_stdio
+
+    def __get_job( self, job_id ):
+        return self._get( 'jobs/%s' % job_id )
+
+    def __get_job_stdio( self, job_id ):
+        return self._get( 'jobs/%s?full=true' % job_id )
 
     def new_history( self ):
         history_json = self._post( "histories", {"name": "test_history"} ).json()
@@ -195,7 +213,7 @@ class GalaxyInteractorApi( object ):
         datasets = self.__submit_tool( history_id, tool_id=testdef.tool.id, tool_input=inputs_tree )
         datasets_object = datasets.json()
         try:
-            return self.__dictify_outputs( datasets_object )
+            return self.__dictify_outputs( datasets_object ), datasets_object[ 'jobs' ]
         except KeyError:
             raise Exception( datasets_object[ 'message' ] )
 
@@ -235,6 +253,9 @@ class GalaxyInteractorApi( object ):
         for output in datasets_object[ 'outputs' ]:
             outputs_dict[ index ] = outputs_dict[ output.get("output_name") ] = output
             index += 1
+        # Adding each item twice (once with index for backward compat),
+        # overiding length to reflect the real number of outputs.
+        outputs_dict.__len__ = lambda: index
         return outputs_dict
 
     def output_hid( self, output_data ):
@@ -248,6 +269,16 @@ class GalaxyInteractorApi( object ):
             while not self.__history_ready( history_id ):
                 pass
         return wait
+
+    def __job_ready( self, job_id, history_id ):
+        job_json = self._get( "jobs/%s" % job_id ).json()
+        state = job_json[ 'state' ]
+        try:
+            return self._state_ready( state, error_msg="Job in error state." )
+        except Exception:
+            if VERBOSE_ERRORS:
+                self._summarize_history_errors( history_id )
+            raise
 
     def __history_ready( self, history_id ):
         history_json = self._get( "histories/%s" % history_id ).json()
@@ -324,16 +355,18 @@ class GalaxyInteractorApi( object ):
         )
         return self._post( "tools", files=files, data=data )
 
-    def ensure_user_with_email( self, email ):
+    def ensure_user_with_email( self, email, password=None ):
         admin_key = self.master_api_key
         all_users = self._get( 'users', key=admin_key ).json()
         try:
             test_user = [ user for user in all_users if user["email"] == email ][0]
         except IndexError:
+            username = re.sub('[^a-z-]', '--', email.lower())
+            password = password or 'testpass'
             data = dict(
                 email=email,
-                password='testuser',
-                username='admin-user',
+                password=password,
+                username=username,
             )
             test_user = self._post( 'users', data, key=admin_key ).json()
         return test_user
@@ -360,7 +393,7 @@ class GalaxyInteractorApi( object ):
             key = self.api_key if not admin else self.master_api_key
         data = data.copy()
         data['key'] = key
-        return post_request( "%s/%s" % (self.api_url, path), data=data, files=files )
+        return post( "%s/%s" % (self.api_url, path), data=data, files=files )
 
     def _get( self, path, data={}, key=None, admin=False ):
         if not key:
@@ -370,7 +403,7 @@ class GalaxyInteractorApi( object ):
         if path.startswith("/api"):
             path = path[ len("/api"): ]
         url = "%s/%s" % (self.api_url, path)
-        return get_request( url, params=data )
+        return get( url, params=data )
 
 
 class GalaxyInteractorTwill( object ):
@@ -386,7 +419,8 @@ class GalaxyInteractorTwill( object ):
         self.twill_test_case.verify_dataset_correctness( outfile, hid=hid, attributes=attributes, shed_tool_id=shed_tool_id, maxseconds=maxseconds )
 
     def get_job_stream( self, history_id, output_data, stream ):
-        return self.twill_test_case._get_job_stream_output( output_data.get( 'id' ), stream=stream, format=False )
+        data_id = self.twill_test_case.security.encode_id( output_data.get( 'id' ) )
+        return self.twill_test_case._get_job_stream_output( data_id, stream=stream, format=False )
 
     def stage_data_async( self, test_data, history, shed_tool_id, async=True ):
             name = test_data.get( 'name', None )
@@ -489,9 +523,3 @@ GALAXY_INTERACTORS = {
     'api': GalaxyInteractorApi,
     'twill': GalaxyInteractorTwill,
 }
-
-
-from requests import get as get_request
-from requests import post as post_request
-from requests import put as put_request
-from requests import delete as delete_request

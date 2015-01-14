@@ -278,6 +278,7 @@ class UploadDataset( Group ):
             ftp_files = context['ftp_files']
             name = context.get( 'NAME', None )
             info = context.get( 'INFO', None )
+            uuid = context.get( 'uuid', None ) or None  # Turn '' to None
             warnings = []
             to_posix_lines = False
             if context.get( 'to_posix_lines', None ) not in [ "None", None, False ]:
@@ -316,12 +317,14 @@ class UploadDataset( Group ):
                         break
             file_bunch.to_posix_lines = to_posix_lines
             file_bunch.space_to_tab = space_to_tab
+            file_bunch.uuid = uuid
             return file_bunch, warnings
         def get_filenames( context ):
             rval = []
             data_file = context['file_data']
             url_paste = context['url_paste']
             ftp_files = context['ftp_files']
+            uuid = context.get( 'uuid', None ) or None  # Turn '' to None
             name = context.get( 'NAME', None )
             info = context.get( 'INFO', None )
             to_posix_lines = False
@@ -332,12 +335,14 @@ class UploadDataset( Group ):
                 space_to_tab = True
             warnings = []
             file_bunch = get_data_file_filename( data_file, override_name = name, override_info = info )
+            file_bunch.uuid = uuid
             if file_bunch.path:
                 file_bunch.to_posix_lines = to_posix_lines
                 file_bunch.space_to_tab = space_to_tab
                 rval.append( file_bunch )
             for file_bunch in get_url_paste_urls_or_filename( context, override_name = name, override_info = info ):
                 if file_bunch.path:
+                    file_bunch.uuid = uuid
                     file_bunch.to_posix_lines = to_posix_lines
                     file_bunch.space_to_tab = space_to_tab
                     rval.append( file_bunch )
@@ -398,6 +403,7 @@ class UploadDataset( Group ):
             dataset.warnings = []
             dataset.metadata = {}
             dataset.composite_files = {}
+            dataset.uuid = None
             #load metadata
             files_metadata = context.get( self.metadata_ref, {} )
             metadata_name_substition_default_dict = dict( [ ( composite_file.substitute_name_with_metadata, d_type.metadata_spec[ composite_file.substitute_name_with_metadata ].default ) for composite_file in d_type.composite_files.values() if composite_file.substitute_name_with_metadata ] )
@@ -472,7 +478,7 @@ class Conditional( Group ):
         for index, case in enumerate( self.cases ):
             if str_value == case.value:
                 return index
-        raise Exception( "No case matched value:", self.name, str_value )
+        raise ValueError( "No case matched value:", self.name, str_value )
     def value_to_basic( self, value, app ):
         rval = dict()
         current_case = rval['__current_case__'] = value['__current_case__']
@@ -539,6 +545,10 @@ class Conditional( Group ):
         cond_dict[ "cases" ] = map( nested_to_dict, self.cases )
         cond_dict[ "test_param" ] = nested_to_dict( self.test_param )
         return cond_dict
+
+    @property
+    def is_job_resource_conditional(self):
+        return self.name == "__job_resource"
 
 
 class ConditionalWhen( object, Dictifiable ):

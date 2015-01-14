@@ -13,7 +13,6 @@ from sqlalchemy import func, and_, select
 
 from paste.httpexceptions import HTTPBadRequest, HTTPInternalServerError
 from paste.httpexceptions import HTTPNotImplemented, HTTPRequestRangeNotSatisfiable
-from galaxy import exceptions
 from galaxy.exceptions import ItemAccessibilityException, ItemDeletionException, ItemOwnershipException
 from galaxy.exceptions import MessageException
 
@@ -26,7 +25,7 @@ from galaxy import objectstore
 from galaxy.web import error, url_for
 from galaxy.web.form_builder import AddressField, CheckboxField, SelectField, TextArea, TextField
 from galaxy.web.form_builder import build_select_field, HistoryField, PasswordField, WorkflowField, WorkflowMappingField
-from galaxy.workflow.modules import module_factory
+from galaxy.workflow.modules import module_factory, WorkflowModuleInjector, MissingToolException
 from galaxy.model.orm import eagerload, eagerload_all, desc
 from galaxy.security.validate_user_input import validate_publicname
 from galaxy.util.sanitize_html import sanitize_html
@@ -37,11 +36,14 @@ from galaxy.datatypes.data import Text
 
 from galaxy.model import ExtendedMetadata, ExtendedMetadataIndex, LibraryDatasetDatasetAssociation, HistoryDatasetAssociation
 
+from galaxy.managers import api_keys
+from galaxy.managers import tags
+from galaxy.managers import base as managers_base
 from galaxy.datatypes.metadata import FileParameter
-from galaxy.tools.parameters import RuntimeValue, visit_input_values
+from galaxy.tools.parameters import visit_input_values
 from galaxy.tools.parameters.basic import DataToolParameter
 from galaxy.tools.parameters.basic import DataCollectionToolParameter
-from galaxy.util.json import to_json_string
+from galaxy.util.json import dumps
 from galaxy.workflow.modules import ToolModule
 from galaxy.workflow.steps import attach_ordered_steps
 from galaxy.util import validation
@@ -75,69 +77,13 @@ class BaseController( object ):
 
     def get_class( self, class_name ):
         """ Returns the class object that a string denotes. Without this method, we'd have to do eval(<class_name>). """
-        if class_name == 'History':
-            item_class = self.app.model.History
-        elif class_name == 'HistoryDatasetAssociation':
-            item_class = self.app.model.HistoryDatasetAssociation
-        elif class_name == 'Page':
-            item_class = self.app.model.Page
-        elif class_name == 'StoredWorkflow':
-            item_class = self.app.model.StoredWorkflow
-        elif class_name == 'Visualization':
-            item_class = self.app.model.Visualization
-        elif class_name == 'Tool':
-            item_class = self.app.model.Tool
-        elif class_name == 'Job':
-            item_class = self.app.model.Job
-        elif class_name == 'User':
-            item_class = self.app.model.User
-        elif class_name == 'Group':
-            item_class = self.app.model.Group
-        elif class_name == 'Role':
-            item_class = self.app.model.Role
-        elif class_name == 'Quota':
-            item_class = self.app.model.Quota
-        elif class_name == 'Library':
-            item_class = self.app.model.Library
-        elif class_name == 'LibraryFolder':
-            item_class = self.app.model.LibraryFolder
-        elif class_name == 'LibraryDatasetDatasetAssociation':
-            item_class = self.app.model.LibraryDatasetDatasetAssociation
-        elif class_name == 'LibraryDataset':
-            item_class = self.app.model.LibraryDataset
-        elif class_name == 'ToolShedRepository':
-            item_class = self.app.install_model.ToolShedRepository
-        else:
-            item_class = None
-        return item_class
+        return managers_base.get_class( class_name )
 
     def get_object( self, trans, id, class_name, check_ownership=False, check_accessible=False, deleted=None ):
         """
         Convenience method to get a model object with the specified checks.
         """
-        try:
-            decoded_id = trans.security.decode_id( id )
-        except:
-            raise MessageException( "Malformed %s id ( %s ) specified, unable to decode"
-                                    % ( class_name, str( id ) ), type='error' )
-        try:
-            item_class = self.get_class( class_name )
-            assert item_class is not None
-            item = trans.sa_session.query( item_class ).get( decoded_id )
-            assert item is not None
-        except Exception:
-            log.exception( "Invalid %s id ( %s ) specified." % ( class_name, id ) )
-            raise MessageException( "Invalid %s id ( %s ) specified" % ( class_name, id ), type="error" )
-
-        if check_ownership or check_accessible:
-            self.security_check( trans, item, check_ownership, check_accessible )
-        if deleted == True and not item.deleted:
-            raise ItemDeletionException( '%s "%s" is not deleted'
-                                         % ( class_name, getattr( item, 'name', id ) ), type="warning" )
-        elif deleted == False and item.deleted:
-            raise ItemDeletionException( '%s "%s" is deleted'
-                                         % ( class_name, getattr( item, 'name', id ) ), type="warning" )
-        return item
+        return managers_base.get_object( trans, id, class_name, check_ownership=check_ownership, check_accessible=check_accessible, deleted=deleted )
 
     # this should be here - but catching errors from sharable item controllers that *should* have SharableItemMixin
     #   but *don't* then becomes difficult
@@ -286,16 +232,12 @@ class CreatesUsersMixin:
 class CreatesApiKeysMixin:
     """
     Mixing centralizing logic for creating API keys for user objects.
+
+    Deprecated - please use api_keys.ApiKeyManager for new development.
     """
 
     def create_api_key( self, trans, user ):
-        guid = trans.app.security.get_new_guid()
-        new_key = trans.app.model.APIKeys()
-        new_key.user_id = user.id
-        new_key.key = guid
-        trans.sa_session.add( new_key )
-        trans.sa_session.flush()
-        return guid
+        return api_keys.ApiKeyManager( trans.app ).create_api_key( user )
 
 
 class SharableItemSecurityMixin:
@@ -303,28 +245,7 @@ class SharableItemSecurityMixin:
 
     def security_check( self, trans, item, check_ownership=False, check_accessible=False ):
         """ Security checks for an item: checks if (a) user owns item or (b) item is accessible to user. """
-        # all items are accessible to an admin
-        if trans.user_is_admin():
-            return item
-
-        # Verify ownership: there is a current user and that user is the same as the item's
-        if check_ownership:
-            if not trans.user:
-                raise ItemOwnershipException( "Must be logged in to manage Galaxy items", type='error' )
-            if item.user != trans.user:
-                raise ItemOwnershipException( "%s is not owned by the current user" % item.__class__.__name__, type='error' )
-
-        # Verify accessible:
-        #   if it's part of a lib - can they access via security
-        #   if it's something else (sharable) have they been added to the item's users_shared_with_dot_users
-        if check_accessible:
-            if type( item ) in ( trans.app.model.LibraryFolder, trans.app.model.LibraryDatasetDatasetAssociation, trans.app.model.LibraryDataset ):
-                if not trans.app.security_agent.can_access_library_item( trans.get_current_user_roles(), item, trans.user ):
-                    raise ItemAccessibilityException( "%s is not accessible to the current user" % item.__class__.__name__, type='error' )
-            else:
-                if ( item.user != trans.user ) and ( not item.importable ) and ( trans.user not in item.users_shared_with_dot_users ):
-                    raise ItemAccessibilityException( "%s is not accessible to the current user" % item.__class__.__name__, type='error' )
-        return item
+        return managers_base.security_check( trans, item, check_ownership=check_ownership, check_accessible=check_accessible )
 
 
 class UsesHistoryMixin( SharableItemSecurityMixin ):
@@ -334,6 +255,11 @@ class UsesHistoryMixin( SharableItemSecurityMixin ):
         """
         Get a History from the database by id, verifying ownership.
         """
+        if trans.user is None and trans.history:
+            if id == trans.security.encode_id( trans.history.id ):
+                return trans.history
+            raise ItemOwnershipException( "Must be logged in to manage Galaxy items", type='error' )
+
         history = self.get_object( trans, id, 'History',
             check_ownership=check_ownership, check_accessible=check_accessible, deleted=deleted )
         history = self.security_check( trans, history, check_ownership, check_accessible )
@@ -400,7 +326,7 @@ class UsesHistoryMixin( SharableItemSecurityMixin ):
 
         # Initialize count dict with all states.
         state_count_dict = {}
-        for k, state in trans.app.model.Dataset.states.items():
+        for state in trans.app.model.Dataset.states.values():
             state_count_dict[ state ] = 0
 
         # Process query results, adding to count dict.
@@ -448,7 +374,7 @@ class UsesHistoryMixin( SharableItemSecurityMixin ):
         # init counts, ids for each state
         state_counts = {}
         state_ids = {}
-        for key, state in trans.app.model.Dataset.states.items():
+        for state in trans.app.model.Dataset.states.values():
             state_counts[ state ] = 0
             state_ids[ state ] = []
 
@@ -644,7 +570,7 @@ class UsesHistoryDatasetAssociationMixin:
             # DEPRECATION: We still support unencoded ids for backward compatibility
             try:
                 dataset_id = int( dataset_id )
-            except ValueError, v_err:
+            except ValueError:
                 raise HTTPBadRequest( "Invalid dataset id: %s." % str( dataset_id ) )
 
         try:
@@ -667,7 +593,7 @@ class UsesHistoryDatasetAssociationMixin:
                 error( "You are not allowed to access this dataset" )
 
             if check_state and data.state == trans.model.Dataset.states.UPLOAD:
-                    return trans.show_error_message( "Please wait until this dataset finishes uploading "
+                return trans.show_error_message( "Please wait until this dataset finishes uploading "
                                                    + "before attempting to view it." )
         return data
 
@@ -729,7 +655,7 @@ class UsesHistoryDatasetAssociationMixin:
                     check_ownership=check_ownership,
                     check_accessible=check_accessible,
                     check_state=check_state )
-            except Exception, exception:
+            except Exception:
                 pass
             hdas.append( hda )
         return hdas
@@ -789,7 +715,7 @@ class UsesHistoryDatasetAssociationMixin:
 
         # ---- return here if deleted AND purged OR can't access
         purged = ( hda.purged or hda.dataset.purged )
-        if ( hda.deleted and purged ):
+        if hda.deleted and purged:
             #TODO: to_dict should really go AFTER this - only summary data
             return trans.security.encode_dict_ids( hda_dict )
 
@@ -802,6 +728,12 @@ class UsesHistoryDatasetAssociationMixin:
         hda_dict[ 'download_url' ] = url_for( 'history_contents_display',
             history_id = trans.security.encode_id( hda.history.id ),
             history_content_id = trans.security.encode_id( hda.id ) )
+
+        # resubmitted is not a real state
+        hda_dict[ 'resubmitted' ] = False
+        if hda.state == trans.app.model.Dataset.states.RESUBMITTED:
+            hda_dict[ 'state' ] = hda.dataset.state
+            hda_dict[ 'resubmitted' ] = True
 
         # indeces, assoc. metadata files, etc.
         meta_files = []
@@ -818,10 +750,6 @@ class UsesHistoryDatasetAssociationMixin:
             hda_dict[ 'visualizations' ] = hda.get_visualizations()
         #TODO: it may also be wiser to remove from here and add as API call that loads the visualizations
         #           when the visualizations button is clicked (instead of preloading/pre-checking)
-
-        # ---- return here if deleted
-        if hda.deleted and not purged:
-            return trans.security.encode_dict_ids( hda_dict )
 
         return trans.security.encode_dict_ids( hda_dict )
 
@@ -947,6 +875,9 @@ class UsesLibraryMixinItems( SharableItemSecurityMixin ):
                                 check_ownership=False, check_accessible=check_accessible )
 
     def get_library_dataset_dataset_association( self, trans, id, check_ownership=False, check_accessible=True ):
+        # Deprecated in lieu to galaxy.managers.lddas.LDDAManager.get() but not
+        # reusing that exactly because of subtle differences in exception handling
+        # logic (API controller override get_object to be slightly different).
         return self.get_object( trans, id, 'LibraryDatasetDatasetAssociation',
                                 check_ownership=False, check_accessible=check_accessible )
 
@@ -961,7 +892,8 @@ class UsesLibraryMixinItems( SharableItemSecurityMixin ):
     #           or ( trans.app.security_agent.can_add_library_item( user.all_roles(), item ) ) )
 
     def can_current_user_add_to_library_item( self, trans, item ):
-        if not trans.user: return False
+        if not trans.user:
+            return False
         return (  ( trans.user_is_admin() )
                or ( trans.app.security_agent.can_add_library_item( trans.get_current_user_roles(), item ) ) )
 
@@ -1480,11 +1412,6 @@ class UsesVisualizationMixin( UsesHistoryDatasetAssociationMixin, UsesLibraryMix
         # Get data provider.
         track_data_provider = trans.app.data_provider_registry.get_data_provider( trans, original_dataset=dataset )
 
-        if isinstance( dataset, trans.app.model.HistoryDatasetAssociation ):
-            hda_ldda = "hda"
-        elif isinstance( dataset, trans.app.model.LibraryDatasetDatasetAssociation ):
-            hda_ldda = "ldda"
-
         # Get track definition.
         return {
             "track_type": dataset.datatype.track_type,
@@ -1622,30 +1549,13 @@ class UsesStoredWorkflowMixin( SharableItemSecurityMixin, UsesAnnotations ):
 
     def get_stored_workflow_steps( self, trans, stored_workflow ):
         """ Restores states for a stored workflow's steps. """
+        module_injector = WorkflowModuleInjector( trans )
         for step in stored_workflow.latest_workflow.steps:
-            step.upgrade_messages = {}
-            if step.type == 'tool' or step.type is None:
-                # Restore the tool state for the step
-                module = module_factory.from_workflow_step( trans, step )
-                if module:
-                    #Check if tool was upgraded
-                    step.upgrade_messages = module.check_and_update_state()
-                    # Any connected input needs to have value DummyDataset (these
-                    # are not persisted so we need to do it every time)
-                    module.add_dummy_datasets( connections=step.input_connections )
-                    # Store state with the step
-                    step.module = module
-                    step.state = module.state
-                else:
-                    step.upgrade_messages = "Unknown Tool ID"
-                    step.module = None
-                    step.state = None
-            else:
-                ## Non-tool specific stuff?
-                step.module = module_factory.from_workflow_step( trans, step )
-                step.state = step.module.get_runtime_state()
-            # Connections by input name
-            step.input_connections_by_name = dict( ( conn.input_name, conn ) for conn in step.input_connections )
+            try:
+                module_injector.inject( step )
+            except MissingToolException:
+                # Now upgrade_messages is a string instead of a dict, why?
+                step.upgrade_messages = "Unknown Tool ID"
 
     def _import_shared_workflow( self, trans, stored):
         """ """
@@ -1667,7 +1577,7 @@ class UsesStoredWorkflowMixin( SharableItemSecurityMixin, UsesAnnotations ):
         session.flush()
         return imported_stored
 
-    def _workflow_from_dict( self, trans, data, source=None, add_to_menu=False ):
+    def _workflow_from_dict( self, trans, data, source=None, add_to_menu=False, publish=False ):
         """
         Creates a workflow from a dict. Created workflow is stored in the database and returned.
         """
@@ -1682,6 +1592,8 @@ class UsesStoredWorkflowMixin( SharableItemSecurityMixin, UsesAnnotations ):
         else:
             name = data['name']
         workflow.name = name
+        if 'uuid' in data:
+            workflow.uuid = data['uuid']
         # Assume no errors until we find a step that has some
         workflow.has_errors = False
         # Create each step
@@ -1693,8 +1605,18 @@ class UsesStoredWorkflowMixin( SharableItemSecurityMixin, UsesAnnotations ):
         # the local Galaxy instance.  Each tuple in the list of missing_tool_tups
         # will be ( tool_id, tool_name, tool_version ).
         missing_tool_tups = []
+        supplied_steps = data[ 'steps' ]
+        # Try to iterate through imported workflow in such a way as to
+        # preserve step order.
+        step_indices = supplied_steps.keys()
+        try:
+            step_indices = sorted( step_indices, key=int )
+        except ValueError:
+            # to defensive, were these ever or will they ever not be integers?
+            pass
         # First pass to build step objects and populate basic values
-        for step_dict in data[ 'steps' ].itervalues():
+        for step_index in step_indices:
+            step_dict = supplied_steps[ step_index ]
             # Create the model class for the step
             step = model.WorkflowStep()
             steps.append( step )
@@ -1710,7 +1632,7 @@ class UsesStoredWorkflowMixin( SharableItemSecurityMixin, UsesAnnotations ):
                     missing_tool_tups.append( missing_tool_tup )
                 # Save the entire step_dict in the unused config field, be parsed later
                 # when we do have the tool
-                step.config = to_json_string(step_dict)
+                step.config = dumps(step_dict)
             if step.tool_errors:
                 workflow.has_errors = True
             # Stick this in the step temporarily
@@ -1745,8 +1667,10 @@ class UsesStoredWorkflowMixin( SharableItemSecurityMixin, UsesAnnotations ):
         workflow.stored_workflow = stored
         stored.latest_workflow = workflow
         stored.user = trans.user
+        stored.published = publish
         if data[ 'annotation' ]:
-            self.add_item_annotation( trans.sa_session, stored.user, stored, data[ 'annotation' ] )
+            annotation = sanitize_html( data[ 'annotation' ], 'utf-8', 'text/html' )
+            self.add_item_annotation( trans.sa_session, stored.user, stored, annotation )
 
         # Persist
         trans.sa_session.add( stored )
@@ -1777,6 +1701,8 @@ class UsesStoredWorkflowMixin( SharableItemSecurityMixin, UsesAnnotations ):
         data['format-version'] = "0.1"
         data['name'] = workflow.name
         data['annotation'] = annotation_str
+        if workflow.uuid is not None:
+            data['uuid'] = str(workflow.uuid)
         data['steps'] = {}
         # For each step, rebuild the form and encode the state
         for step in workflow.steps:
@@ -1811,39 +1737,19 @@ class UsesStoredWorkflowMixin( SharableItemSecurityMixin, UsesAnnotations ):
                                                                       action_arguments = pja.action_arguments )
                 step_dict[ 'post_job_actions' ] = pja_dict
             # Data inputs
-            step_dict['inputs'] = []
-            if module.type == "data_input":
-                # Get input dataset name; default to 'Input Dataset'
-                name = module.state.get( 'name', 'Input Dataset')
-                step_dict['inputs'].append( { "name" : name, "description" : annotation_str } )
-            elif module.type == "data_collection_input":
-                name = module.state.get( 'name', 'Input Dataset Collection' )
-                step_dict['inputs'].append( { "name" : name, "description" : annotation_str } )
-            else:
-                # Step is a tool and may have runtime inputs.
-                for name, val in module.state.inputs.items():
-                    input_type = type( val )
-                    if input_type == RuntimeValue:
-                        step_dict['inputs'].append( { "name" : name, "description" : "runtime parameter for tool %s" % module.get_name() } )
-                    elif input_type == dict:
-                        # Input type is described by a dict, e.g. indexed parameters.
-                        for partval in val.values():
-                            if type( partval ) == RuntimeValue:
-                                step_dict['inputs'].append( { "name" : name, "description" : "runtime parameter for tool %s" % module.get_name() } )
+            step_dict['inputs'] = module.get_runtime_input_dicts( annotation_str )
             # User outputs
             step_dict['user_outputs'] = []
-            """
-            module_outputs = module.get_data_outputs()
-            step_outputs = trans.sa_session.query( WorkflowOutput ).filter( step=step )
-            for output in step_outputs:
-                name = output.output_name
-                annotation = ""
-                for module_output in module_outputs:
-                    if module_output.get( 'name', None ) == name:
-                        output_type = module_output.get( 'extension', '' )
-                        break
-                data['outputs'][name] = { 'name' : name, 'annotation' : annotation, 'type' : output_type }
-            """
+#            module_outputs = module.get_data_outputs()
+#            step_outputs = trans.sa_session.query( WorkflowOutput ).filter( step=step )
+#            for output in step_outputs:
+#                name = output.output_name
+#                annotation = ""
+#                for module_output in module_outputs:
+#                    if module_output.get( 'name', None ) == name:
+#                        output_type = module_output.get( 'extension', '' )
+#                        break
+#                data['outputs'][name] = { 'name' : name, 'annotation' : annotation, 'type' : output_type }
 
             # All step outputs
             step_dict['outputs'] = []
@@ -2228,7 +2134,7 @@ class UsesFormDefinitionsMixin:
         # We need the type of each template field widget
         widgets = item.get_template_widgets( trans )
         # The list of widgets may include an AddressField which we need to save if it is new
-        for index, widget_dict in enumerate( widgets ):
+        for widget_dict in widgets:
             widget = widget_dict[ 'widget' ]
             if isinstance( widget, AddressField ):
                 value = util.restore_text( params.get( widget.name, '' ) )
@@ -2309,7 +2215,7 @@ class UsesFormDefinitionsMixin:
                         trans.sa_session.flush()
                         info_association = sra.run
                     else:
-                       info_association = assoc.run
+                        info_association = assoc.run
                 else:
                     info_association = None
             if info_association:
@@ -2453,7 +2359,7 @@ class UsesFormDefinitionsMixin:
     def widget_fields_have_contents( self, widgets ):
         # Return True if any of the fields in widgets contain contents, widgets is a list of dictionaries that looks something like:
         # [{'widget': <galaxy.web.form_builder.TextField object at 0x10867aa10>, 'helptext': 'Field 0 help (Optional)', 'label': 'Field 0'}]
-        for i, field in enumerate( widgets ):
+        for field in widgets:
             if ( isinstance( field[ 'widget' ], TextArea ) or isinstance( field[ 'widget' ], TextField ) ) and field[ 'widget' ].value:
                 return True
             if isinstance( field[ 'widget' ], SelectField ) and field[ 'widget' ].options:
@@ -2474,7 +2380,7 @@ class UsesFormDefinitionsMixin:
 
     def clean_field_contents( self, widgets, **kwd ):
         field_contents = {}
-        for index, widget_dict in enumerate( widgets ):
+        for widget_dict in widgets:
             widget = widget_dict[ 'widget' ]
             value = kwd.get( widget.name, ''  )
             if isinstance( widget, CheckboxField ):
@@ -2523,7 +2429,7 @@ class UsesFormDefinitionsMixin:
         '''
         params = util.Params( kwd )
         values = {}
-        for index, field in enumerate( form_definition.fields ):
+        for field in form_definition.fields:
             field_type = field[ 'type' ]
             field_name = field[ 'name' ]
             input_value = params.get( field_name, '' )
@@ -2671,11 +2577,13 @@ class SharableMixin:
     def set_public_username( self, trans, id, username, **kwargs ):
         """ Set user's public username and delegate to sharing() """
         user = trans.get_user()
+        # message from validate_publicname does not contain input, no need
+        # to escape.
         message = validate_publicname( trans, username, user )
         if message:
             return trans.fill_template( '/sharing_base.mako', item=self.get_item( trans, id ), message=message, status='error' )
         user.username = username
-        trans.sa_session.flush
+        trans.sa_session.flush()
         return self.sharing( trans, id, **kwargs )
 
     @web.expose
@@ -2684,7 +2592,7 @@ class SharableMixin:
         item = self.get_item( trans, id )
         if item:
             # Only update slug if slug is not already in use.
-            if trans.sa_session.query( item.__class__ ).filter_by( user=item.user, slug=new_slug, importable=True ).count() == 0:
+            if trans.sa_session.query( item.__class__ ).filter_by( user=item.user, slug=new_slug ).count() == 0:
                 item.slug = new_slug
                 trans.sa_session.flush()
 
@@ -2719,7 +2627,9 @@ class SharableMixin:
         # add integer to end.
         new_slug = slug_base
         count = 1
-        while sa_session.query( item.__class__ ).filter_by( user=item.user, slug=new_slug, importable=True ).count() != 0:
+        # Ensure unique across model class and user and don't include this item
+        # in the check in case it has previously been assigned a valid slug.
+        while sa_session.query( item.__class__ ).filter( item.__class__.user == item.user, item.__class__.slug == new_slug, item.__class__.id != item.id).count() != 0:
             # Slug taken; choose a new slug based on count. This approach can
             # handle numerous items with the same name gracefully.
             new_slug = '%s-%i' % ( slug_base, count )
@@ -2735,34 +2645,34 @@ class SharableMixin:
     @web.require_login( "share Galaxy items" )
     def sharing( self, trans, id, **kwargs ):
         """ Handle item sharing. """
-        raise "Unimplemented Method"
+        raise NotImplementedError()
 
     @web.expose
     @web.require_login( "share Galaxy items" )
     def share( self, trans, id=None, email="", **kwd ):
         """ Handle sharing an item with a particular user. """
-        raise "Unimplemented Method"
+        raise NotImplementedError()
 
     @web.expose
     def display_by_username_and_slug( self, trans, username, slug ):
         """ Display item by username and slug. """
-        raise "Unimplemented Method"
+        raise NotImplementedError()
 
     @web.json
     @web.require_login( "get item name and link" )
     def get_name_and_link_async( self, trans, id=None ):
         """ Returns item's name and link. """
-        raise "Unimplemented Method"
+        raise NotImplementedError()
 
     @web.expose
     @web.require_login("get item content asynchronously")
     def get_item_content_async( self, trans, id ):
         """ Returns item content in HTML format. """
-        raise "Unimplemented Method"
+        raise NotImplementedError()
 
     def get_item( self, trans, id ):
         """ Return item based on id. """
-        raise "Unimplemented Method"
+        raise NotImplementedError()
 
 
 class UsesQuotaMixin( object ):
@@ -2779,7 +2689,7 @@ class UsesTagsMixin( SharableItemSecurityMixin ):
     def _get_user_tags( self, trans, item_class_name, id ):
         user = trans.user
         tagged_item = self._get_tagged_item( trans, item_class_name, id )
-        return [ tag for tag in tagged_item.tags if ( tag.user == user ) ]
+        return [ tag for tag in tagged_item.tags if tag.user == user ]
 
     def _get_tagged_item( self, trans, item_class_name, id, check_ownership=True ):
         tagged_item = self.get_object( trans, id, item_class_name, check_ownership=check_ownership, check_accessible=True )
@@ -2807,16 +2717,9 @@ class UsesTagsMixin( SharableItemSecurityMixin ):
         return self.get_tag_handler( trans )._get_item_tag_assoc( user, tagged_item, tag_name )
 
     def set_tags_from_list( self, trans, item, new_tags_list, user=None ):
-        #precondition: item is already security checked against user
-        #precondition: incoming tags is a list of sanitized/formatted strings
-        user = user or trans.user
-
-        # based on controllers/tag retag_async: delete all old, reset to entire new
-        trans.app.tag_handler.delete_item_tags( trans, user, item )
-        new_tags_str = ','.join( new_tags_list )
-        trans.app.tag_handler.apply_item_tags( trans, user, item, unicode( new_tags_str.encode( 'utf-8' ), 'utf-8' ) )
-        trans.sa_session.flush()
-        return item.tags
+        # Method deprecated - try to use TagsHandler instead.
+        tags_manager = tags.TagsManager( trans.app )
+        return tags_manager.set_tags_from_list( trans, item, new_tags_list, user=user )
 
     def get_user_tags_used( self, trans, user=None ):
         """
@@ -2848,7 +2751,6 @@ class UsesTagsMixin( SharableItemSecurityMixin ):
         tags = all_tags_query.distinct().all()
         tags = [( ( name + ':' + val ) if val else name ) for name, val in tags ]
         return sorted( tags )
-
 
 
 class UsesExtendedMetadataMixin( SharableItemSecurityMixin ):
@@ -2940,10 +2842,10 @@ class UsesExtendedMetadataMixin( SharableItemSecurityMixin ):
             yield prefix, ("%s" % (meta)).encode("utf8", errors='replace')
 
 
-"""
-Deprecated: `BaseController` used to be available under the name `Root`
-"""
 class ControllerUnavailable( Exception ):
+    """
+    Deprecated: `BaseController` used to be available under the name `Root`
+    """
     pass
 
 ## ---- Utility methods -------------------------------------------------------

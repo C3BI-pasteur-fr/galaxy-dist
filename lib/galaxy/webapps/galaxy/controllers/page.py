@@ -1,12 +1,14 @@
 from sqlalchemy import desc, and_
 from galaxy import model, web
+from galaxy import managers
 from galaxy.web import error, url_for
 from galaxy.model.item_attrs import UsesItemRatings
 from galaxy.web.base.controller import BaseUIController, SharableMixin, UsesHistoryMixin, UsesStoredWorkflowMixin, UsesVisualizationMixin
 from galaxy.web.framework.helpers import time_ago, grids
 from galaxy import util
 from galaxy.util.sanitize_html import sanitize_html, _BaseHTMLProcessor
-from galaxy.util.json import from_json_string
+from galaxy.util.json import loads
+from markupsafe import escape
 
 def format_bool( b ):
     if b:
@@ -88,9 +90,9 @@ class ItemSelectionGrid( grids.Grid ):
     class NameColumn( grids.TextColumn ):
         def get_value(self, trans, grid, item):
             if hasattr( item, "get_display_name" ):
-                return item.get_display_name()
+                return escape(item.get_display_name())
             else:
-                return item.name
+                return escape(item.name)
 
     # Grid definition.
     show_item_checkboxes = True
@@ -284,6 +286,12 @@ class PageController( BaseUIController, SharableMixin, UsesHistoryMixin,
     _datasets_selection_grid = HistoryDatasetAssociationSelectionGrid()
     _page_selection_grid = PageSelectionGrid()
     _visualization_selection_grid = VisualizationSelectionGrid()
+
+    def __init__( self, app ):
+        super( PageController, self ).__init__( app )
+        self.mgrs = util.bunch.Bunch(
+            histories=managers.histories.HistoryManager()
+        )
 
     @web.expose
     @web.require_login()
@@ -492,14 +500,14 @@ class PageController( BaseUIController, SharableMixin, UsesHistoryMixin,
                                     .first()
             if not other:
                 mtype = "error"
-                msg = ( "User '%s' does not exist" % email )
+                msg = ( "User '%s' does not exist" % escape( email ) )
             elif other == trans.get_user():
                 mtype = "error"
                 msg = ( "You cannot share a page with yourself" )
             elif trans.sa_session.query( model.PageUserShareAssociation ) \
                     .filter_by( user=other, page=page ).count() > 0:
                 mtype = "error"
-                msg = ( "Page already shared with '%s'" % email )
+                msg = ( "Page already shared with '%s'" % escape( email ) )
             else:
                 share = model.PageUserShareAssociation()
                 share.page = page
@@ -508,7 +516,9 @@ class PageController( BaseUIController, SharableMixin, UsesHistoryMixin,
                 session.add( share )
                 self.create_item_slug( session, page )
                 session.flush()
-                trans.set_message( "Page '%s' shared with user '%s'" % ( page.title, other.email ) )
+                page_title = escape( page.title )
+                other_email = escape( other.email )
+                trans.set_message( "Page '%s' shared with user '%s'" % ( page_title, other_email ) )
                 return trans.response.send_redirect( url_for( controller='page', action='sharing', id=id ) )
         return trans.fill_template( "/ind_share_base.mako",
                                     message = msg,
@@ -535,7 +545,7 @@ class PageController( BaseUIController, SharableMixin, UsesHistoryMixin,
         page_revision.content = content
 
         # Save annotations.
-        annotations = from_json_string( annotations )
+        annotations = loads( annotations )
         for annotation_dict in annotations:
             item_id = trans.security.decode_id( annotation_dict[ 'item_id' ] )
             item_class = self.get_class( annotation_dict[ 'item_class' ] )
@@ -718,6 +728,7 @@ class PageController( BaseUIController, SharableMixin, UsesHistoryMixin,
         """
         Returns html suitable for embedding in another page.
         """
+        #TODO: should be moved to history controller and/or called via ajax from the template
         history = self.get_history( trans, id, False, True )
         if not history:
             return None
@@ -729,16 +740,45 @@ class PageController( BaseUIController, SharableMixin, UsesHistoryMixin,
 
         hda_dicts = []
         datasets = self.get_history_datasets( trans, history )
-        for hda in datasets:
-            hda_dict = self.get_hda_dict( trans, hda )
-            hda_dict[ 'annotation' ] = self.get_item_annotation_str( trans.sa_session, history.user, hda )
-            hda_dicts.append( hda_dict )
-        history_dict = self.get_history_dict( trans, history, hda_dictionaries=hda_dicts )
-        history_dict[ 'annotation' ] = history.annotation
+        #for hda in datasets:
+        #    hda_dict = self.get_hda_dict( trans, hda )
+        #    hda_dict[ 'annotation' ] = self.get_item_annotation_str( trans.sa_session, history.user, hda )
+        #    hda_dicts.append( hda_dict )
+        #history_dict = self.get_history_dict( trans, history, hda_dictionaries=hda_dicts )
+        #history_dict[ 'annotation' ] = history.annotation
+
+        # include all datasets: hidden, deleted, and purged
+        #TODO!: doubled query (hda_dictionaries + datasets)
+        history_data = self.mgrs.histories._get_history_data( trans, history )
+        history_dictionary = history_data[ 'history' ]
+        hda_dictionaries   = history_data[ 'contents' ]
+        history_dictionary[ 'annotation' ] = history.annotation
 
         filled = trans.fill_template( "history/embed.mako", item=history, item_data=datasets,
-            user_is_owner=user_is_owner, history_dict=history_dict, hda_dicts=hda_dicts )
+            user_is_owner=user_is_owner, history_dict=history_dictionary, hda_dicts=hda_dictionaries )
         return filled
+
+    def _get_embedded_visualization_html( self, trans, id ):
+        """
+        Returns html suitable for embedding visualizations in another page.
+        """
+        visualization = self.get_visualization( trans, id, False, True )
+        visualization.annotation = self.get_item_annotation_str( trans.sa_session, visualization.user, visualization )
+        if not visualization:
+            return None
+
+        # Fork to template based on visualization.type (registry or builtin).
+        if( ( trans.app.visualizations_registry and visualization.type in trans.app.visualizations_registry.plugins )
+        and ( visualization.type not in trans.app.visualizations_registry.BUILT_IN_VISUALIZATIONS ) ):
+            # if a registry visualization, load a version into an iframe :(
+            #TODO: simplest path from A to B but not optimal - will be difficult to do reg visualizations any other way
+            #TODO: this will load the visualization twice (once above, once when the iframe src calls 'saved')
+            encoded_visualization_id = trans.security.encode_id( visualization.id )
+            return trans.fill_template( 'visualization/embed_in_frame.mako',
+                item=visualization, encoded_visualization_id=encoded_visualization_id,
+                content_only=True )
+
+        return trans.fill_template( "visualization/embed.mako", item=visualization, item_data=None )
 
     def _get_embed_html( self, trans, item_class, item_id ):
         """ Returns HTML for embedding an item in a page. """
@@ -761,10 +801,7 @@ class PageController( BaseUIController, SharableMixin, UsesHistoryMixin,
                 return trans.fill_template( "workflow/embed.mako", item=workflow, item_data=workflow.latest_workflow.steps )
 
         elif item_class == model.Visualization:
-            visualization = self.get_visualization( trans, item_id, False, True )
-            visualization.annotation = self.get_item_annotation_str( trans.sa_session, visualization.user, visualization )
-            if visualization:
-                return trans.fill_template( "visualization/embed.mako", item=visualization, item_data=None )
+            return self._get_embedded_visualization_html( trans, item_id )
 
         elif item_class == model.Page:
             pass

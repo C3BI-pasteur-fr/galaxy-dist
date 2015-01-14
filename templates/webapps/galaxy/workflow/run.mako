@@ -154,18 +154,27 @@
 
          $(".workflow-edit-button").on("click",function(){
                 var state = $(this).attr("name");
-                var stepToolBox = $(this).parent().find('input:not([class]), select:not([class])');
-                var split_name=stepToolBox.attr("name").split("|");
+                var stepToolBox = $(this).parent().find('input:not([class]):not([type="hidden"]), select:not([class])');
+                var labels = $(this).parent().find('label');
+                var split_name = stepToolBox.attr("name").split("|");
                 var step_id = split_name[0];
-                var step_name = split_name[split_name.length-1];
-                hidden_html = "<input type='hidden' name='"+step_id+"|__runtime__"+step_name+"' value='true' />";
+                var step_name = split_name.slice(1, split_name.length).join("|");
+                var hidden_html = "<input type='hidden' name='"+step_id+"|__runtime__"+step_name+"' value='true' />";
+                var html = "";
                 if (state === "edit"){
                     stepToolBoxClone = stepToolBox.clone();
-                    stepToolBoxClone.attr({"name":step_id+"|"+step_name});
-                    stepToolBoxClone.show()
+                    stepToolBoxClone.each(function(index){$(stepToolBoxClone[index]).attr({"name":step_id+"|"+step_name})});
+                    stepToolBoxClone.show();
+                    if (labels.length > 0){
+                        stepToolBoxClone.each(function(index){
+                        html += stepToolBoxClone[index].outerHTML + labels[index].outerHTML + "<br/>"});
+                    }
+                    else{
+                        html = stepToolBoxClone.outerHTML();
+                    }
                     $(this).parent().find(".editable").show();
                     $(this).parent().parent().find(".uneditable_field").hide();
-                    $(this).parent().find(".editable").html(stepToolBoxClone.outerHTML()+hidden_html);
+                    $(this).parent().find(".editable").html(html+hidden_html);
                     editingParameter($(this));
                 }
                 else{
@@ -209,7 +218,7 @@
                     }
                 });
             });
-            $("#tool_form").submit(function(e) {
+            $("#tool_form").preventDoubleSubmission().submit(function(e) {
                 var matchLength = -1;
                 $('span.multiinput_wrap select[name*="|input"]').each(function() {
                     var value = $(this).val();
@@ -339,6 +348,9 @@ if wf_parms:
           ## <div class="form-row"><input type="submit" name="${step.id}|${prefix}${input.name}_add" value="Add new ${input.title}" /></div>
       </div>
     %elif input.type == "conditional":
+      %if input.is_job_resource_conditional:
+        <% continue %>
+      %endif
       <% group_values = values[input.name] %>
       <% current_case = group_values['__current_case__'] %>
       <% new_prefix = prefix + input.name + "|" %>
@@ -360,7 +372,7 @@ if wf_parms:
         <% cls = "form-row" %>
     %endif
     <div class="${cls}">
-        <label>${param.get_label()}</label>
+        <label>${param.get_label() | h}</label>
         <div>
             %if isinstance( param, DataToolParameter ) or isinstance( param, DataCollectionToolParameter ):
                 %if ( prefix + param.name ) in step.input_connections_by_name:
@@ -432,11 +444,11 @@ if wf_parms:
                 %else:
                 <span class="workflow_parameters">
                     <span class="uneditable_field">
-                        ${param.value_to_display_text( value, app )}
+                        ${param.value_to_display_text( value, app ) | h}
                     </span>
                     <span class="editable_field">
                         <span class="editable">
-                            ${param.get_html_field( t, value, other_values).get_html( str(step.id) + "|" + "editable" + "|"+ prefix )}
+                            ${param.get_html_field( t, value, other_values).get_html( str(step.id) + "|"+ prefix )}
                         </span>
 
                         <i class="fa workflow-edit-button"></i>
@@ -462,7 +474,7 @@ if wf_parms:
     <span class="action-button" id="hide_all_tool_body">Collapse</span>
 </div>
 
-<h2>Running workflow "${h.to_unicode( workflow.name )}"</h2>
+<h2>Running workflow "${h.to_unicode( workflow.name ) | h}"</h2>
 
 %if has_upgrade_messages:
 <div class="warningmessage">
@@ -530,11 +542,15 @@ if wf_parms:
     </script>
 %endif
 %for i, step in enumerate( steps ):
+    <!-- Only way module would be missing is if tool is missing, but
+         that would cause missing_tools.mako to render instead of this
+         template. -->
+    <% module = step.module %>
+    <input type="hidden" name="${step.id}|tool_state" value="${module.encode_runtime_state( t, step.state )}">
     %if step.type == 'tool' or step.type is None:
       <%
         tool = trans.app.toolbox.get_tool( step.tool_id )
       %>
-      <input type="hidden" name="${step.id}|tool_state" value="${step.state.encode( tool, app )}">
       <div class="toolForm">
           <div class="toolFormTitle">
               <span class='title_ul_text'>Step ${int(step.order_index)+1}: ${tool.name}</span>
@@ -558,6 +574,7 @@ if wf_parms:
                     <%
                     pja_ss_all = []
                     for pja_ss in [ActionBox.get_short_str(pja) for pja in step.post_job_actions]:
+                        pja_ss = h.escape( pja_ss )
                         for rematch in re.findall('\$\{.+?\}', pja_ss):
                             pja_ss = pja_ss.replace(rematch, '<span style="background-color:%s" class="wfpspan wf_parm__%s pja_wfp">%s</span>' % (wf_parms[rematch[2:-1]], rematch[2:-1], rematch[2:-1]))
                         pja_ss_all.append(pja_ss)
@@ -568,11 +585,9 @@ if wf_parms:
               </div>
           </div>
         %else:
-        <% module = step.module %>
-          <input type="hidden" name="${step.id}|tool_state" value="${module.encode_runtime_state( t, step.state )}">
           <div class="toolForm">
               <div class="toolFormTitle">
-                  <span class='title_ul_text'>Step ${int(step.order_index)+1}: ${module.name}</span>
+                  <span class='title_ul_text'>Step ${int(step.order_index)+1}: ${module.name | h}</span>
                   % if step.annotations:
                     <div class="step-annotation">${step.annotations[0].annotation}</div>
                   % endif
@@ -593,21 +608,11 @@ if wf_parms:
       </div>
     %endif
 %endfor
-%if missing_tools:
-    <div class='errormessage'>
-    <strong>This workflow utilizes tools which are unavailable, and cannot be run.  Enable the tools listed below, or <a href="${h.url_for(controller='workflow', action='editor', id=trans.security.encode_id(workflow.id) )}" target="_parent">edit the workflow</a> to correct these errors.</strong><br/>
-    <ul>
-    %for i, tool in enumerate( missing_tools ):
-        <li>${tool}</li>
-    %endfor
-    </ul>
-%else:
-    %if history_id is None:
-<p id='new_history_p'>
-    <input type="checkbox" name='new_history' value="true" id='new_history_cbx'/><label for='new_history_cbx'>Send results to a new history </label>
-    <span id="new_history_input">named: <input type='text' name='new_history_name' value='${ h.to_unicode( workflow.name ) | h }'/></span>
-</p>
-    %endif
+%if history_id is None:
+    <p id='new_history_p'>
+        <input type="checkbox" name='new_history' value="true" id='new_history_cbx'/><label for='new_history_cbx'>Send results to a new history </label>
+        <span id="new_history_input">named: <input type='text' name='new_history_name' value='${ h.to_unicode( workflow.name ) | h }'/></span>
+    </p>
+%endif
 <input type="submit" class="btn btn-primary" name="run_workflow" value="Run workflow" />
 </form>
-%endif

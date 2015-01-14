@@ -168,8 +168,8 @@
             };
 
             $(function firstVizLoad(){       // calls when viz is loaded for the first time
-                var config = ${ h.to_json_string( config )};
-                var data = ${h.to_json_string(data['data'])};
+                var config = ${ h.dumps( config )};
+                var data = ${h.dumps(data['data'])};
                 initPhyloViz(data, config);
             });
         });
@@ -180,7 +180,6 @@
 
 
 <%def name="center_panel()">
-
     <div class="unified-panel-header" unselectable="on">
         <div class="unified-panel-header-inner">
             <div style="float:left;" id="title"></div>
@@ -196,7 +195,7 @@
                 <p>Select a tree to view: &nbsp;&nbsp;
                 <select id="phylovizNexSelector">
                     % for tree, index in data["trees"]:
-                        <option value="${index}">${tree}</option>
+                        <option value="${index | h}">${tree | h}</option>
                     % endfor
                 </select>
                 </p>

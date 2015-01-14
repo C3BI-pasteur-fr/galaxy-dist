@@ -105,7 +105,7 @@ class JobFilesAPIController( BaseAPIController ):
         job = trans.sa_session.query( model.Job ).get( job_id )
         if job.finished:
             error_message = "Attempting to read or modify the files of a job that has already completed."
-            raise exceptions.MessageException( error_message )
+            raise exceptions.ItemAccessibilityException( error_message )
         return job
 
     def __check_job_can_write_to_path( self, trans, job, path ):
@@ -118,8 +118,15 @@ class JobFilesAPIController( BaseAPIController ):
         https://gist.github.com/jmchilton/9103619.)
         """
         in_work_dir = self.__in_working_directory( job, path, trans.app )
-        if not in_work_dir and not self.__is_output_dataset_path( job, path ):
+        allow_temp_dir_file = self.__is_allowed_temp_dir_file( trans.app, job, path )
+        if not in_work_dir and not allow_temp_dir_file and not self.__is_output_dataset_path( job, path ):
             raise exceptions.ItemAccessibilityException("Job is not authorized to write to supplied path.")
+
+    def __is_allowed_temp_dir_file( self, app, job, path ):
+        # grrr.. need to get away from new_file_path - these should be written
+        # to job working directory like metadata files.
+        in_temp_dir = util.in_directory( path, app.config.new_file_path )
+        return in_temp_dir and os.path.split( path )[ -1 ].startswith( "GALAXY_VERSION_")
 
     def __is_output_dataset_path( self, job, path ):
         """ Check if is an output path for this job or a file in the an

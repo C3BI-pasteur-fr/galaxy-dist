@@ -14,7 +14,7 @@ from galaxy.datatypes import metadata
 from galaxy.datatypes.checkers import is_gzip
 from galaxy.datatypes.metadata import MetadataElement
 from galaxy.datatypes.sniff import get_headers, get_test_fname
-from galaxy.util.json import to_json_string
+from galaxy.util.json import dumps
 import dataproviders
 
 log = logging.getLogger(__name__)
@@ -25,7 +25,6 @@ class Tabular( data.Text ):
 
     # All tabular data is chunkable.
     CHUNKABLE = True
-    CHUNK_SIZE = 50000
 
     """Add metadata elements"""
     MetadataElement( name="comment_lines", default=0, desc="Number of comment lines", readonly=False, optional=True, no_value=0 )
@@ -262,18 +261,18 @@ class Tabular( data.Text ):
     def get_chunk(self, trans, dataset, chunk):
         ck_index = int(chunk)
         f = open(dataset.file_name)
-        f.seek(ck_index * self.CHUNK_SIZE)
+        f.seek(ck_index * trans.app.config.display_chunk_size)
         # If we aren't at the start of the file, seek to next newline.  Do this better eventually.
         if f.tell() != 0:
             cursor = f.read(1)
             while cursor and cursor != '\n':
                 cursor = f.read(1)
-        ck_data = f.read(self.CHUNK_SIZE)
+        ck_data = f.read(trans.app.config.display_chunk_size)
         cursor = f.read(1)
         while cursor and ck_data[-1] != '\n':
             ck_data += cursor
             cursor = f.read(1)
-        return to_json_string( { 'ck_data': util.unicodify( ck_data ), 'ck_index': ck_index + 1 } )
+        return dumps( { 'ck_data': util.unicodify( ck_data ), 'ck_index': ck_index + 1 } )
 
     def display_data(self, trans, dataset, preview=False, filename=None, to_ext=None, chunk=None, **kwd):
         preview = util.string_as_bool( preview )

@@ -6,7 +6,7 @@
 
 <%
     from galaxy.web.framework.helpers import time_ago
-    from tool_shed.util.shed_util_common import to_html_string
+    from tool_shed.util.basic_util import to_html_string
 
     is_new = repository.is_new( trans.app )
     is_deprecated = repository.deprecated
@@ -171,7 +171,7 @@ ${render_repository_items( metadata, containers_dict, can_set_metadata=False, re
         <div class="toolFormBody">
             %for rca in repository.categories:
                 <div class="form-row">
-                    ${rca.category.name | h}
+                    <a href="${h.url_for( controller='repository', action='browse_repositories_in_category', id=trans.security.encode_id( rca.category.id ) )}">${rca.category.name | h}</a> - ${rca.category.description | h}
                 </div>
             %endfor
             <div style="clear: both"></div>

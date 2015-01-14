@@ -215,7 +215,6 @@ HistoriesAPI.prototype.urlTpls = {
     delete_ : 'api/histories/%s',
     undelete: 'api/histories/deleted/%s/undelete',
     update  : 'api/histories/%s',
-    set_as_current : 'api/histories/%s/set_as_current'
 };
 
 HistoriesAPI.prototype.index = function index( deleted ){
@@ -279,15 +278,6 @@ HistoriesAPI.prototype.update = function update( id, payload ){
     return this.api._ajax( url, {
         type : 'PUT',
         data : payload
-    });
-};
-
-HistoriesAPI.prototype.set_as_current = function set_as_current( id ){
-    this.api.spaceghost.info( 'histories.set_as_current: ' + id );
-    id = this.api.ensureId( id );
-
-    return this.api._ajax( utils.format( this.urlTpls.set_as_current, id ), {
-        type : 'PUT'
     });
 };
 
@@ -555,13 +545,14 @@ ToolsAPI.prototype.upload = function upload( historyId, options ){
 };
 
 /** amount of time allowed to upload a file (before erroring) */
-ToolsAPI.prototype.DEFAULT_UPLOAD_TIMEOUT = 12000;
+ToolsAPI.prototype.DEFAULT_UPLOAD_TIMEOUT = 30 * 1000;
 
 /** add two casperjs steps - upload a file, wait for the job to complete, and run 'then' when they are */
 ToolsAPI.prototype.thenUpload = function thenUpload( historyId, options, then ){
     var spaceghost = this.api.spaceghost,
         uploadedId;
 
+    // upload via the api
     spaceghost.then( function(){
         var returned = this.api.tools.upload( historyId, options );
         this.debug( 'returned: ' + this.jsonStr( returned ) );
@@ -569,17 +560,19 @@ ToolsAPI.prototype.thenUpload = function thenUpload( historyId, options, then ){
         this.debug( 'uploadedId: ' + uploadedId );
     });
 
+    // wait for upload/queued/running to stop
     spaceghost.then( function(){
+        var hda = null;
         this.waitFor(
             function testHdaState(){
-                var hda = spaceghost.api.hdas.show( historyId, uploadedId );
+                hda = spaceghost.api.hdas.show( historyId, uploadedId );
                 spaceghost.debug( spaceghost.jsonStr( hda.state ) );
                 return !( hda.state === 'upload' || hda.state === 'queued' || hda.state === 'running' );
             },
             function _then(){
                 spaceghost.info( 'upload finished: ' + uploadedId );
                 if( then ){
-                    then.call( spaceghost, uploadedId );
+                    then.call( spaceghost, uploadedId, hda );
                 }
                 //var hda = spaceghost.api.hdas.show( historyId, uploadedId );
                 //spaceghost.debug( spaceghost.jsonStr( hda ) );
@@ -635,6 +628,16 @@ ToolsAPI.prototype.thenUploadMultiple = function thenUploadMultiple( historyId, 
         );
     });
     return spaceghost;
+};
+
+
+/** get the current history's id, then upload there */
+ToolsAPI.prototype.thenUploadToCurrent = function thenUploadToCurrent( options, then ){
+    var spaceghost = this.api.spaceghost;
+    return spaceghost.then( function(){
+        var currentHistoryId = this.api.histories.index()[0].id;
+        spaceghost.api.tools.thenUpload( currentHistoryId, options, then );
+    });
 };
 
 

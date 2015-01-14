@@ -1,21 +1,27 @@
-import os, logging
-from galaxy import web, util
-from galaxy.web.base.controller import BaseUIController
-from galaxy.web.form_builder import SelectField, CheckboxField
+import logging
+import os
+
 from sqlalchemy.sql.expression import func
+from tool_shed.util.web_util import escape
+
+from galaxy import util
+from galaxy import web
+
 from galaxy.model.orm import and_
-from galaxy.webapps.tool_shed.util import ratings_util
-from tool_shed.util.container_util import STRSEP
-import tool_shed.util.shed_util_common as suc
-from tool_shed.util import hg_util
-from tool_shed.util import review_util
 from galaxy.util.odict import odict
+from galaxy.web.base.controller import BaseUIController
+from galaxy.web.form_builder import CheckboxField
+from galaxy.web.form_builder import SelectField
+
+from galaxy.webapps.tool_shed.util import ratings_util
+
 import tool_shed.grids.repository_review_grids as repository_review_grids
 import tool_shed.grids.util as grids_util
 
-from galaxy import eggs
-eggs.require('mercurial')
-from mercurial import hg, ui, patch, commands
+from tool_shed.util.container_util import STRSEP
+from tool_shed.util import hg_util
+from tool_shed.util import review_util
+from tool_shed.util import shed_util_common as suc
 
 log = logging.getLogger( __name__ )
 
@@ -35,10 +41,10 @@ class RepositoryReviewController( BaseUIController, ratings_util.ItemRatings ):
     @web.require_login( "approve repository review" )
     def approve_repository_review( self, trans, **kwd ):
         # The value of the received id is the encoded review id.
-        message = kwd.get( 'message', ''  )
+        message = escape( kwd.get( 'message', '' ) )
         status = kwd.get( 'status', 'done' )
         encoded_review_id = kwd[ 'id' ]
-        review = review_util.get_review( trans, encoded_review_id )
+        review = review_util.get_review( trans.app, encoded_review_id )
         if kwd.get( 'approve_repository_review_button', False ):
             approved_select_field_name = '%s%sapproved' % ( encoded_review_id, STRSEP )
             approved_select_field_value = str( kwd[ approved_select_field_name ] )
@@ -69,11 +75,11 @@ class RepositoryReviewController( BaseUIController, ratings_util.ItemRatings ):
     @web.expose
     @web.require_login( "browse review" )
     def browse_review( self, trans, **kwd ):
-        message = kwd.get( 'message', ''  )
+        message = escape( kwd.get( 'message', '' ) )
         status = kwd.get( 'status', 'done' )
-        review = review_util.get_review( trans, kwd[ 'id' ] )
+        review = review_util.get_review( trans.app, kwd[ 'id' ] )
         repository = review.repository
-        repo = hg.repository( hg_util.get_configured_ui(), repository.repo_path( trans.app ) )
+        repo = hg_util.get_repo_for_repository( trans.app, repository=repository, repo_path=None, create=False )
         rev, changeset_revision_label = hg_util.get_rev_label_from_changeset_revision( repo, review.changeset_revision )
         return trans.fill_template( '/webapps/tool_shed/repository_review/browse_review.mako',
                                     repository=repository,
@@ -100,7 +106,7 @@ class RepositoryReviewController( BaseUIController, ratings_util.ItemRatings ):
     @web.expose
     @web.require_login( "create component" )
     def create_component( self, trans, **kwd ):
-        message = kwd.get( 'message', ''  )
+        message = escape( kwd.get( 'message', '' ) )
         status = kwd.get( 'status', 'done' )
         name = kwd.get( 'name', '' )
         description = kwd.get( 'description', '' )
@@ -108,7 +114,7 @@ class RepositoryReviewController( BaseUIController, ratings_util.ItemRatings ):
             if not name or not description:
                 message = 'Enter a valid name and a description'
                 status = 'error'
-            elif review_util.get_component_by_name( trans, name ):
+            elif review_util.get_component_by_name( trans.app, name ):
                 message = 'A component with that name already exists'
                 status = 'error'
             else:
@@ -131,7 +137,7 @@ class RepositoryReviewController( BaseUIController, ratings_util.ItemRatings ):
     @web.require_login( "create review" )
     def create_review( self, trans, **kwd ):
         # The value of the received id is the encoded repository id.
-        message = kwd.get( 'message', ''  )
+        message = escape( kwd.get( 'message', '' ) )
         status = kwd.get( 'status', 'done' )
         repository_id = kwd.get( 'id', None )
         changeset_revision = kwd.get( 'changeset_revision', None )
@@ -140,8 +146,8 @@ class RepositoryReviewController( BaseUIController, ratings_util.ItemRatings ):
         if repository_id:
             if changeset_revision:
                 # Make sure there is not already a review of the revision by the user.
-                repository = suc.get_repository_in_tool_shed( trans, repository_id )
-                if review_util.get_review_by_repository_id_changeset_revision_user_id( trans=trans,
+                repository = suc.get_repository_in_tool_shed( trans.app, repository_id )
+                if review_util.get_review_by_repository_id_changeset_revision_user_id( app=trans.app,
                                                                                        repository_id=repository_id,
                                                                                        changeset_revision=changeset_revision,
                                                                                        user_id=trans.security.encode_id( trans.user.id ) ):
@@ -149,13 +155,15 @@ class RepositoryReviewController( BaseUIController, ratings_util.ItemRatings ):
                     status = "error"
                 else:
                     # See if there are any reviews for previous changeset revisions that the user can copy.
-                    if not create_without_copying and not previous_review_id and review_util.has_previous_repository_reviews( trans, repository, changeset_revision ):
+                    if not create_without_copying and \
+                        not previous_review_id and \
+                        review_util.has_previous_repository_reviews( trans.app, repository, changeset_revision ):
                         return trans.response.send_redirect( web.url_for( controller='repository_review',
                                                                           action='select_previous_review',
                                                                           **kwd ) )
                     # A review can be initially performed only on an installable revision of a repository, so make sure we have metadata associated
                     # with the received changeset_revision.
-                    repository_metadata = suc.get_repository_metadata_by_changeset_revision( trans, repository_id, changeset_revision )
+                    repository_metadata = suc.get_repository_metadata_by_changeset_revision( trans.app, repository_id, changeset_revision )
                     if repository_metadata:
                         metadata = repository_metadata.metadata
                         if metadata:
@@ -167,7 +175,7 @@ class RepositoryReviewController( BaseUIController, ratings_util.ItemRatings ):
                             trans.sa_session.add( review )
                             trans.sa_session.flush()
                             if previous_review_id:
-                                review_to_copy = review_util.get_review( trans, previous_review_id )
+                                review_to_copy = review_util.get_review( trans.app, previous_review_id )
                                 self.copy_review( trans, review_to_copy, review )
                             review_id = trans.security.encode_id( review.id )
                             message = "Begin your review of revision <b>%s</b> of repository <b>%s</b>." \
@@ -194,7 +202,7 @@ class RepositoryReviewController( BaseUIController, ratings_util.ItemRatings ):
     @web.expose
     @web.require_login( "edit component" )
     def edit_component( self, trans, **kwd ):
-        message = kwd.get( 'message', ''  )
+        message = escape( kwd.get( 'message', '' ) )
         status = kwd.get( 'status', 'done' )
         id = kwd.get( 'id', None )
         if not id:
@@ -203,7 +211,7 @@ class RepositoryReviewController( BaseUIController, ratings_util.ItemRatings ):
                                                        action='manage_categories',
                                                        message=message,
                                                        status='error' ) )
-        component = review_util.get_component( trans, id )
+        component = review_util.get_component( trans.app, id )
         if kwd.get( 'edit_component_button', False ):
             new_description = kwd.get( 'description', '' ).strip()
             if component.description != new_description:
@@ -225,15 +233,15 @@ class RepositoryReviewController( BaseUIController, ratings_util.ItemRatings ):
     @web.require_login( "edit review" )
     def edit_review( self, trans, **kwd ):
         # The value of the received id is the encoded review id.
-        message = kwd.get( 'message', ''  )
+        message = escape( kwd.get( 'message', '' ) )
         status = kwd.get( 'status', 'done' )
         review_id = kwd.get( 'id', None )
-        review = review_util.get_review( trans, review_id )
+        review = review_util.get_review( trans.app, review_id )
         components_dict = odict()
-        for component in review_util.get_components( trans ):
+        for component in review_util.get_components( trans.app ):
             components_dict[ component.name ] = dict( component=component, component_review=None )
         repository = review.repository
-        repo = hg.repository( hg_util.get_configured_ui(), repository.repo_path( trans.app ) )
+        repo = hg_util.get_repo_for_repository( trans.app, repository=repository, repo_path=None, create=False )
         for component_review in review.component_reviews:
             if component_review and component_review.component:
                 component_name = component_review.component.name
@@ -280,8 +288,11 @@ class RepositoryReviewController( BaseUIController, ratings_util.ItemRatings ):
                             approved = str( v )
                         elif component_review_attr == 'rating':
                             rating = int( str( v ) )
-                component = review_util.get_component( trans, component_id )
-                component_review = review_util.get_component_review_by_repository_review_id_component_id( trans, review_id, component_id )
+                component = review_util.get_component( trans.app, component_id )
+                component_review = \
+                    review_util.get_component_review_by_repository_review_id_component_id( trans.app,
+                                                                                           review_id,
+                                                                                           component_id )
                 if component_review:
                     # See if the existing component review should be updated.
                     if component_review.comment != comment or \
@@ -398,7 +409,7 @@ class RepositoryReviewController( BaseUIController, ratings_util.ItemRatings ):
     @web.require_login( "manage repositories reviewed by me" )
     def manage_repositories_reviewed_by_me( self, trans, **kwd ):
         # The value of the received id is the encoded repository id.
-        message = kwd.get( 'message', ''  )
+        message = escape( kwd.get( 'message', '' ) )
         status = kwd.get( 'status', 'done' )
         if 'operation' in kwd:
             kwd[ 'mine' ] = True
@@ -465,27 +476,29 @@ class RepositoryReviewController( BaseUIController, ratings_util.ItemRatings ):
     @web.require_login( "manage repository reviews" )
     def manage_repository_reviews( self, trans, mine=False, **kwd ):
         # The value of the received id is the encoded repository id.
-        message = kwd.get( 'message', ''  )
+        message = escape( kwd.get( 'message', '' ) )
         status = kwd.get( 'status', 'done' )
         repository_id = kwd.get( 'id', None )
         if repository_id:
-            repository = suc.get_repository_in_tool_shed( trans, repository_id )
-            repo_dir = repository.repo_path( trans.app )
-            repo = hg.repository( hg_util.get_configured_ui(), repo_dir )
+            repository = suc.get_repository_in_tool_shed( trans.app, repository_id )
+            repo = hg_util.get_repo_for_repository( trans.app, repository=repository, repo_path=None, create=False )
             metadata_revision_hashes = [ metadata_revision.changeset_revision for metadata_revision in repository.metadata_revisions ]
             reviewed_revision_hashes = [ review.changeset_revision for review in repository.reviews ]
             reviews_dict = odict()
-            for changeset in suc.get_reversed_changelog_changesets( repo ):
+            for changeset in hg_util.get_reversed_changelog_changesets( repo ):
                 ctx = repo.changectx( changeset )
                 changeset_revision = str( ctx )
                 if changeset_revision in metadata_revision_hashes or changeset_revision in reviewed_revision_hashes:
                     rev, changeset_revision_label = hg_util.get_rev_label_from_changeset_revision( repo, changeset_revision )
                     if changeset_revision in reviewed_revision_hashes:
                         # Find the review for this changeset_revision
-                        repository_reviews = review_util.get_reviews_by_repository_id_changeset_revision( trans, repository_id, changeset_revision )
+                        repository_reviews = \
+                            review_util.get_reviews_by_repository_id_changeset_revision( trans.app,
+                                                                                         repository_id,
+                                                                                         changeset_revision )
                         # Determine if the current user can add a review to this revision.
                         can_add_review = trans.user not in [ repository_review.user for repository_review in repository_reviews ]
-                        repository_metadata = suc.get_repository_metadata_by_changeset_revision( trans, repository_id, changeset_revision )
+                        repository_metadata = suc.get_repository_metadata_by_changeset_revision( trans.app, repository_id, changeset_revision )
                         if repository_metadata:
                             repository_metadata_reviews = util.listify( repository_metadata.reviews )
                         else:
@@ -512,16 +525,17 @@ class RepositoryReviewController( BaseUIController, ratings_util.ItemRatings ):
     @web.require_login( "manage repository reviews of revision" )
     def manage_repository_reviews_of_revision( self, trans, **kwd ):
         # The value of the received id is the encoded repository id.
-        message = kwd.get( 'message', ''  )
+        message = escape( kwd.get( 'message', '' ) )
         status = kwd.get( 'status', 'done' )
         repository_id = kwd.get( 'id', None )
         changeset_revision = kwd.get( 'changeset_revision', None )
-        repository = suc.get_repository_in_tool_shed( trans, repository_id )
-        repo_dir = repository.repo_path( trans.app )
-        repo = hg.repository( hg_util.get_configured_ui(), repo_dir )
+        repository = suc.get_repository_in_tool_shed( trans.app, repository_id )
+        repo = hg_util.get_repo_for_repository( trans.app, repository=repository, repo_path=None, create=False )
         installable = changeset_revision in [ metadata_revision.changeset_revision for metadata_revision in repository.metadata_revisions ]
         rev, changeset_revision_label = hg_util.get_rev_label_from_changeset_revision( repo, changeset_revision )
-        reviews = review_util.get_reviews_by_repository_id_changeset_revision( trans, repository_id, changeset_revision )
+        reviews = review_util.get_reviews_by_repository_id_changeset_revision( trans.app,
+                                                                               repository_id,
+                                                                               changeset_revision )
         return trans.fill_template( '/webapps/tool_shed/repository_review/reviews_of_changeset_revision.mako',
                                     repository=repository,
                                     changeset_revision=changeset_revision,
@@ -534,13 +548,13 @@ class RepositoryReviewController( BaseUIController, ratings_util.ItemRatings ):
     @web.expose
     @web.require_login( "repository reviews by user" )
     def repository_reviews_by_user( self, trans, **kwd ):
-        message = kwd.get( 'message', ''  )
+        message = escape( kwd.get( 'message', '' ) )
         status = kwd.get( 'status', 'done' )
 
         if 'operation' in kwd:
             operation = kwd['operation'].lower()
             # The value of the received id is the encoded review id.
-            review = review_util.get_review( trans, kwd[ 'id' ] )
+            review = review_util.get_review( trans.app, kwd[ 'id' ] )
             repository = review.repository
             kwd[ 'id' ] = trans.security.encode_id( repository.id )
             if operation == "inspect repository revisions":
@@ -553,14 +567,14 @@ class RepositoryReviewController( BaseUIController, ratings_util.ItemRatings ):
                                                                   action='view_or_manage_repository',
                                                                   **kwd ) )
         # The user may not be the current user.  The value of the received id is the encoded user id.
-        user = suc.get_user( trans, kwd[ 'id' ] )
+        user = suc.get_user( trans.app, kwd[ 'id' ] )
         self.repository_reviews_by_user_grid.title = "All repository revision reviews for user '%s'" % user.username
         return self.repository_reviews_by_user_grid( trans, **kwd )
 
     @web.expose
     @web.require_login( "reviewed repositories i own" )
     def reviewed_repositories_i_own( self, trans, **kwd ):
-        message = kwd.get( 'message', ''  )
+        message = escape( kwd.get( 'message', '' ) )
         status = kwd.get( 'status', 'done' )
         # The value of the received id is the encoded repository id.
         if 'operation' in kwd:
@@ -579,12 +593,14 @@ class RepositoryReviewController( BaseUIController, ratings_util.ItemRatings ):
     @web.require_login( "select previous review" )
     def select_previous_review( self, trans, **kwd ):
         # The value of the received id is the encoded repository id.
-        message = kwd.get( 'message', ''  )
+        message = escape( kwd.get( 'message', '' ) )
         status = kwd.get( 'status', 'done' )
-        repository = suc.get_repository_in_tool_shed( trans, kwd[ 'id' ] )
+        repository = suc.get_repository_in_tool_shed( trans.app, kwd[ 'id' ] )
         changeset_revision = kwd.get( 'changeset_revision', None )
-        repo = hg.repository( hg_util.get_configured_ui(), repository.repo_path( trans.app ) )
-        previous_reviews_dict = review_util.get_previous_repository_reviews( trans, repository, changeset_revision )
+        repo = hg_util.get_repo_for_repository( trans.app, repository=repository, repo_path=None, create=False )
+        previous_reviews_dict = review_util.get_previous_repository_reviews( trans.app,
+                                                                             repository,
+                                                                             changeset_revision )
         rev, changeset_revision_label = hg_util.get_rev_label_from_changeset_revision( repo, changeset_revision )
         return trans.fill_template( '/webapps/tool_shed/repository_review/select_previous_review.mako',
                                     repository=repository,
@@ -597,7 +613,7 @@ class RepositoryReviewController( BaseUIController, ratings_util.ItemRatings ):
     @web.expose
     @web.require_login( "view or manage repository" )
     def view_or_manage_repository( self, trans, **kwd ):
-        repository = suc.get_repository_in_tool_shed( trans, kwd[ 'id' ] )
+        repository = suc.get_repository_in_tool_shed( trans.app, kwd[ 'id' ] )
         if trans.user_is_admin() or repository.user == trans.user:
             return trans.response.send_redirect( web.url_for( controller='repository',
                                                               action='manage_repository',

@@ -11,6 +11,10 @@
             $('.embedded-item').each( function() {
                 var container = $(this);
                 if( container.hasClass( 'history' ) ){ return; }
+                //note: we can't do the same override for visualizations
+                // bc builtins (like trackster) need the handlers/ajax below to work.
+                // instead: (for registry visualizations) we'll clear the handlers below
+                //  and add new ones (in embed_in_frame.mako) ...ugh.
             
                 // Show embedded item.
                 var show_embedded_item = function() {
@@ -29,14 +33,6 @@
                                 container.find(".toggle-expand").hide();
                                 container.find(".toggle").show();
 
-                                // Init needed for history items.
-                                init_history_items( container.find("div.historyItemWrapper"), "noinit", "nochanges" ); 
-                                container.find( "div.historyItemBody:visible" ).each( function() {
-                                    if ( $.browser.mozilla ) {
-                                        $(this).find( "pre.peek" ).css( "overflow", "hidden" );
-                                    }
-                                    $(this).hide();
-                                });
                                 make_popup_menus();
                             }
                         });
@@ -127,10 +123,6 @@
         .embedded-item.history .toggle {
             display: inline;
         }
-        .embedded-item.history .expanded-content {
-            /* generates a fake wide border */
-            padding: 4px;
-        }
         /** wraps around the history */
         .embedded-item.history .item-content {
             background-color: white;
@@ -145,6 +137,11 @@
         }
         .annotated-history-panel .history-controls {
             margin: 0px 0px 16px 0px;
+        }
+
+        /* ---------------------------- visualizations */
+        .embedded-item.visualization .item-content {
+            max-height: none;
         }
     </style>
 </%def>

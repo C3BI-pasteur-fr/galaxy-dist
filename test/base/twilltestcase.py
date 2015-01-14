@@ -16,9 +16,9 @@ import zipfile
 
 from base.asserts import verify_assertions
 from galaxy.util import asbool
-from galaxy.util.json import from_json_string
+from galaxy.util.json import loads
 from galaxy.web import security
-from galaxy.web.framework.helpers import iff
+from galaxy.web.framework.helpers import iff, escape
 from urlparse import urlparse
 
 from galaxy import eggs
@@ -56,7 +56,7 @@ class TwillTestCase( unittest.TestCase ):
             f = open( self.tool_shed_test_file, 'r' )
             text = f.read()
             f.close()
-            self.shed_tools_dict = from_json_string( text )
+            self.shed_tools_dict = loads( text )
         else:
             self.shed_tools_dict = {}
         self.keepOutdir = os.environ.get( 'GALAXY_TEST_SAVE', '' )
@@ -109,7 +109,7 @@ class TwillTestCase( unittest.TestCase ):
         tc.fv( "1", "name", name )
         tc.fv( "1", "description", description )
         tc.submit( "new_folder_button" )
-        check_str = "The new folder named '%s' has been added to the data library." % name
+        check_str = escape( "The new folder named '%s' has been added to the data library." % name )
         self.check_page_for_string( check_str )
 
     def add_samples( self, cntrller, request_id, sample_value_tuples, folder_options=[], strings_displayed=[], strings_displayed_after_submit=[] ):
@@ -216,7 +216,7 @@ class TwillTestCase( unittest.TestCase ):
         for check_str in strings_not_displayed:
             try:
                 self.check_page_for_string( check_str )
-                raise AssertionError( "String (%s) incorrectly displayed when browing library." % check_str )
+                raise AssertionError( "String (%s) incorrectly displayed when browsing library." % check_str )
             except:
                 pass
 
@@ -227,7 +227,7 @@ class TwillTestCase( unittest.TestCase ):
         for check_str in strings_not_displayed:
             try:
                 self.check_page_for_string( check_str )
-                raise AssertionError( "String (%s) incorrectly displayed when browing library." % check_str )
+                raise AssertionError( "String (%s) incorrectly displayed when browsing library." % check_str )
             except:
                 pass
 
@@ -238,7 +238,7 @@ class TwillTestCase( unittest.TestCase ):
         for check_str in strings_not_displayed:
             try:
                 self.check_page_for_string( check_str )
-                raise AssertionError( "String (%s) incorrectly displayed when browing library." % check_str )
+                raise AssertionError( "String (%s) incorrectly displayed when browsing library." % check_str )
             except:
                 pass
 
@@ -506,13 +506,13 @@ class TwillTestCase( unittest.TestCase ):
         self.check_page_for_string( 'The file conversion of Convert BED to GFF on data' )
         self.wait()  # wait for the format convert tool to finish before returning
 
-    def copy_history_item( self, source_dataset_id=None, target_history_id=None, all_target_history_ids=[],
+    def copy_history_item( self, source_history_id=None, source_dataset_id=None, target_history_id=None, all_target_history_ids=[],
                            deleted_history_ids=[] ):
         """
         Copy 1 history_dataset_association to 1 history (Limited by twill since it doesn't support multiple
         field names, such as checkboxes
         """
-        self.visit_url( "%s/dataset/copy_datasets?source_dataset_ids=%s" % ( self.url, source_dataset_id ) )
+        self.visit_url( "/dataset/copy_datasets" )
         self.check_page_for_string( 'Source History:' )
         # Make sure all of users active histories are displayed
         for id in all_target_history_ids:
@@ -524,9 +524,11 @@ class TwillTestCase( unittest.TestCase ):
                 raise AssertionError( "deleted history id %d displayed in list of target histories" % id )
             except:
                 pass
-
-        tc.fv( '1', 'target_history_id', target_history_id )
-        tc.submit( 'do_copy' )
+        form_values = [ ( 'source_history', source_history_id ),
+                        ( 'target_history_id', target_history_id ),
+                        ( 'source_content_ids', 'dataset|%s' % source_dataset_id ),
+                        ( 'do_copy', True ) ]
+        self.visit_url( "/dataset/copy_datasets", params=form_values )
         check_str = '1 dataset copied to 1 history'
         self.check_page_for_string( check_str )
 
@@ -574,7 +576,7 @@ class TwillTestCase( unittest.TestCase ):
         tc.fv( "1", "description", description )
         tc.fv( "1", "synopsis", synopsis )
         tc.submit( "create_library_button" )
-        check_str = "The new library named '%s' has been created" % name
+        check_str = escape( "The new library named '%s' has been created" % name )
         self.check_page_for_string( check_str )
 
     def create_user_with_info( self, email, password, username, user_info_values, user_type_fd_id='', cntrller='user',
@@ -1291,15 +1293,10 @@ class TwillTestCase( unittest.TestCase ):
 
     def get_running_datasets( self ):
         self.visit_url( '/api/histories' )
-        history_id = from_json_string( self.last_page() )[0][ 'id' ]
-        self.visit_url( '/api/histories/%s/contents' % history_id )
-        jsondata = from_json_string( self.last_page() )
-        for history_item in jsondata:
-            self.visit_url( history_item[ 'url' ] )
-            item_json = from_json_string( self.last_page() )
-            if item_json[ 'state' ] in [ 'queued', 'running', 'paused' ]:
-                return True
-        return False
+        history_id = loads( self.last_page() )[0][ 'id' ]
+        self.visit_url( '/api/histories/%s' % history_id )
+        jsondata = loads( self.last_page() )
+        return jsondata[ 'state' ] in [ 'queued', 'running' ]
 
     def get_tags( self, item_id, item_class ):
         self.visit_url( "%s/tag/get_tagging_elt_async?item_id=%s&item_class=%s" % \
@@ -1392,7 +1389,7 @@ class TwillTestCase( unittest.TestCase ):
 
     def json_from_url( self, url, params={} ):
         self.visit_url( url, params )
-        return from_json_string( self.last_page() )
+        return loads( self.last_page() )
 
     def last_page( self ):
         return tc.browser.get_html()
@@ -1440,7 +1437,7 @@ class TwillTestCase( unittest.TestCase ):
         if new_ldda_name:
             tc.fv( '1', 'name', new_ldda_name )
             tc.submit( 'save' )
-            check_str = "Attributes updated for library dataset '%s'." % new_ldda_name
+            check_str = escape( "Attributes updated for library dataset '%s'." % new_ldda_name )
             self.check_page_for_string( check_str )
         if template_refresh_field_contents:
             # A template containing an AddressField is displayed on the upload form, so we need to refresh the form
@@ -1491,7 +1488,7 @@ class TwillTestCase( unittest.TestCase ):
             key = '%s_in' % pi
             url = "%s&%s=%s" % ( url, key, role_ids_str )
         self.visit_url( "%s/%s" % ( self.url, url ) )
-        check_str = "Permissions updated for library '%s'." % library_name
+        check_str = escape( "Permissions updated for library '%s'." % library_name )
         self.check_page_for_string( check_str )
 
     def library_wait( self, library_id, cntrller='library_admin', maxiter=90 ):
@@ -2444,7 +2441,7 @@ class TwillTestCase( unittest.TestCase ):
         return self.wait_for(lambda: self.get_running_datasets(), **kwds)
 
     def wait_for( self, func, **kwd ):
-        sleep_amount = 0.1
+        sleep_amount = 0.2
         slept = 0
         walltime_exceeded = 86400
         while slept <= walltime_exceeded:
@@ -2494,7 +2491,7 @@ class TwillTestCase( unittest.TestCase ):
         return msg
 
     def _get_job_stream_output( self, hda_id, stream, format ):
-        self.visit_url( "/datasets/%s/%s" % ( self.security.encode_id( hda_id ), stream ) )
+        self.visit_url( "/datasets/%s/%s" % ( hda_id, stream ) )
 
         output = self.last_page()
         return self._format_stream( output, stream, format )

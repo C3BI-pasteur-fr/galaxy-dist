@@ -15,17 +15,12 @@
             }
         });
 
-        require(['mvc/data'], function(data) {
+        require([ 'mvc/data' ], function( data ) {
             data.createTabularDatasetChunkedView({
-                dataset_config: _.extend( ${h.to_json_string( trans.security.encode_dict_ids( dataset.to_dict() ) )}, 
-                        {
-                            url_viz: "${h.url_for( controller='/visualization')}",
-                            chunk_url: "${h.url_for( controller='/dataset', action='display',
-                                             dataset_id=trans.security.encode_id( dataset.id ))}",
-                            first_data_chunk: ${chunk}
-                        }
-                ),
-                parent_elt: $('body')
+                dataset_config : _.extend( ${ h.dumps( trans.security.encode_dict_ids( dataset.to_dict() ) )}, {
+                        first_data_chunk: ${ chunk }
+                    }),
+                parent_elt : $( 'body' )
             });
         });
     </script>

@@ -11,17 +11,17 @@ import shutil
 import struct
 import subprocess
 import tempfile
+import re
 import zipfile
 
-from urllib import urlencode, quote_plus
 from galaxy import eggs
 eggs.require( "bx-python" )
 
 from bx.seq.twobit import TWOBIT_MAGIC_NUMBER, TWOBIT_MAGIC_NUMBER_SWAP, TWOBIT_MAGIC_SIZE
 
-from galaxy.datatypes.metadata import MetadataElement
+from galaxy.util import sqlite
+from galaxy.datatypes.metadata import MetadataElement, MetadataParameter, ListParameter, DictParameter
 from galaxy.datatypes import metadata
-from galaxy.datatypes.sniff import *
 import dataproviders
 
 log = logging.getLogger(__name__)
@@ -279,6 +279,8 @@ class Bam( Binary ):
             return dataset.peek
         except:
             return "Binary bam alignments file (%s)" % ( data.nice_size( dataset.get_size() ) )
+
+
 
     # ------------- Dataproviders
     # pipe through samtools view
@@ -545,3 +547,162 @@ class TwoBit (Binary):
             return "Binary TwoBit format nucleotide file (%s)" % (data.nice_size(dataset.get_size()))
 
 Binary.register_sniffable_binary_format("twobit", "twobit", TwoBit)
+
+
+@dataproviders.decorators.has_dataproviders
+class SQlite ( Binary ):
+    """Class describing a Sqlite database """
+    MetadataElement( name="tables", default=[], param=ListParameter, desc="Database Tables", readonly=True, visible=True, no_value=[] )
+    MetadataElement( name="table_columns", default={}, param=DictParameter, desc="Database Table Columns", readonly=True, visible=True, no_value={} )
+    MetadataElement( name="table_row_count", default={}, param=DictParameter, desc="Database Table Row Count", readonly=True, visible=True, no_value={} )
+    file_ext = "sqlite"
+
+    def init_meta( self, dataset, copy_from=None ):
+        Binary.init_meta( self, dataset, copy_from=copy_from )
+
+    def set_meta( self, dataset, overwrite = True, **kwd ):
+        try:
+            tables = []
+            columns = dict()
+            rowcounts = dict()
+            conn = sqlite.connect(dataset.file_name)
+            c = conn.cursor()
+            tables_query = "SELECT name,sql FROM sqlite_master WHERE type='table' ORDER BY name"
+            rslt = c.execute(tables_query).fetchall()
+            for table,sql in rslt:
+                tables.append(table)
+                try:
+                    col_query = 'SELECT * FROM %s LIMIT 0' % table
+                    cur = conn.cursor().execute(col_query)
+                    cols = [col[0] for col in cur.description]
+                    columns[table] = cols
+                except Exception, exc:
+                    log.warn( '%s, set_meta Exception: %s', self, exc )
+            for table in tables:
+                try:
+                    row_query = "SELECT count(*) FROM %s" % table
+                    rowcounts[table] = c.execute(row_query).fetchone()[0]
+                except Exception, exc:
+                    log.warn( '%s, set_meta Exception: %s', self, exc )
+            dataset.metadata.tables = tables
+            dataset.metadata.table_columns = columns
+            dataset.metadata.table_row_count = rowcounts
+        except Exception, exc:
+            log.warn( '%s, set_meta Exception: %s', self, exc )
+
+    def sniff( self, filename ):
+        # The first 16 bytes of any SQLite3 database file is 'SQLite format 3\0', and the file is binary. For details
+        # about the format, see http://www.sqlite.org/fileformat.html
+        try:
+            header = open(filename).read(16)
+            if binascii.b2a_hex(header) == binascii.hexlify('SQLite format 3\0'):
+                return True
+            return False
+        except:
+            return False
+
+    def set_peek( self, dataset, is_multi_byte=False ):
+        if not dataset.dataset.purged:
+            dataset.peek  = "SQLite Database"
+            lines = ['SQLite Database']
+            if dataset.metadata.tables:
+                for table in dataset.metadata.tables:
+                    try:
+                        lines.append('%s [%s]' % (table,dataset.metadata.table_row_count[table]))
+                    except:
+                        continue
+            dataset.peek = '\n'.join(lines)
+            dataset.blurb = data.nice_size( dataset.get_size() )
+        else:
+            dataset.peek = 'file does not exist'
+            dataset.blurb = 'file purged from disk'
+
+    def display_peek( self, dataset ):
+        try:
+            return dataset.peek
+        except:
+            return "SQLite Database (%s)" % ( data.nice_size( dataset.get_size() ) )
+
+
+    @dataproviders.decorators.dataprovider_factory( 'sqlite', dataproviders.dataset.SQliteDataProvider.settings )
+    def sqlite_dataprovider( self, dataset, **settings ):
+        dataset_source = dataproviders.dataset.DatasetDataProvider( dataset )
+        return dataproviders.dataset.SQliteDataProvider( dataset_source, **settings )
+
+
+#Binary.register_sniffable_binary_format("sqlite", "sqlite", SQlite)
+
+
+class GeminiSQLite( SQlite ):
+    """Class describing a Gemini Sqlite database """
+    MetadataElement( name="gemini_version", default='0.10.0' , param=MetadataParameter, desc="Gemini Version", 
+                     readonly=True, visible=True, no_value='0.10.0' )
+    file_ext = "gemini.sqlite"
+
+    def set_meta( self, dataset, overwrite = True, **kwd ):
+        super( GeminiSQLite, self ).set_meta( dataset, overwrite = overwrite, **kwd )
+        try:
+            conn = sqlite.connect( dataset.file_name )
+            c = conn.cursor()
+            tables_query = "SELECT version FROM version"
+            result = c.execute( tables_query ).fetchall()
+            for version, in result:
+                dataset.metadata.gemini_version = version
+            # TODO: Can/should we detect even more attributes, such as use of PED file, what was input annotation type, etc.
+        except Exception, e:
+            log.warn( '%s, set_meta Exception: %s', self, e )
+
+    def sniff( self, filename ):
+        if super( GeminiSQLite, self ).sniff( filename ):
+            gemini_table_names = [ "gene_detailed", "gene_summary", "resources", "sample_genotype_counts", "sample_genotypes", "samples", 
+                                  "variant_impacts", "variants", "version" ]
+            try:
+                conn = sqlite.connect( filename )
+                c = conn.cursor()
+                tables_query = "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+                result = c.execute( tables_query ).fetchall()
+                result = map( lambda x: x[0], result )
+                for table_name in gemini_table_names:
+                    if table_name not in result:
+                        return False
+                return True
+            except Exception, e:
+                log.warn( '%s, sniff Exception: %s', self, e )
+        return False
+
+    def set_peek( self, dataset, is_multi_byte=False ):
+        if not dataset.dataset.purged:
+            dataset.peek  = "Gemini SQLite Database, version %s" % ( dataset.metadata.gemini_version or 'unknown' )
+            dataset.blurb = data.nice_size( dataset.get_size() )
+        else:
+            dataset.peek = 'file does not exist'
+            dataset.blurb = 'file purged from disk'
+
+    def display_peek( self, dataset ):
+        try:
+            return dataset.peek
+        except:
+            return "Gemini SQLite Database, version %s" % ( dataset.metadata.gemini_version or 'unknown' )
+
+Binary.register_sniffable_binary_format( "gemini.sqlite", "gemini.sqlite", GeminiSQLite )
+# FIXME: We need to register gemini.sqlite before sqlite, since register_sniffable_binary_format and is_sniffable_binary called in upload.py
+# ignores sniff order declared in datatypes_conf.xml
+Binary.register_sniffable_binary_format("sqlite", "sqlite", SQlite)
+
+
+class Xlsx(Binary):
+    """Class for Excel 2007 (xlsx) files"""
+    file_ext="xlsx"
+    def sniff( self, filename ):
+        # Xlsx is compressed in zip format and must not be uncompressed in Galaxy.
+        try:
+            if zipfile.is_zipfile( filename ):
+                tempzip = zipfile.ZipFile( filename )
+                if "[Content_Types].xml" in tempzip.namelist() and tempzip.read("[Content_Types].xml").find(b'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml') != -1:
+                    return True
+            return False
+        except:
+            return False
+
+Binary.register_sniffable_binary_format("xlsx", "xlsx", Xlsx)
+

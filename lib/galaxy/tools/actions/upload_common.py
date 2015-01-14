@@ -7,7 +7,7 @@ from cgi import FieldStorage
 from galaxy import datatypes, util
 from galaxy.util.odict import odict
 from galaxy.datatypes import sniff
-from galaxy.util.json import to_json_string
+from galaxy.util.json import dumps
 from galaxy.model.orm import eagerload_all
 from galaxy.exceptions import ObjectInvalid
 
@@ -30,7 +30,7 @@ def persist_uploads( params ):
                 f.file.close()
                 upload_dataset['file_data'] = dict( filename=f.filename,
                                                     local_filename=local_filename )
-            elif type( f ) == dict and 'filename' and 'local_filename' not in f:
+            elif type( f ) == dict and 'local_filename' not in f:
                 raise Exception( 'Uploaded file was encoded in a way not understood by Galaxy.' )
             if upload_dataset['url_paste'] and upload_dataset['url_paste'].strip() != '':
                 upload_dataset['url_paste'], is_multi_byte = datatypes.sniff.stream_to_file( StringIO.StringIO( upload_dataset['url_paste'] ), prefix="strio_url_paste_" )
@@ -243,6 +243,7 @@ def get_uploaded_datasets( trans, cntrller, params, precreated_datasets, dataset
         else:
             data.extension = uploaded_dataset.file_type
             data.dbkey = uploaded_dataset.dbkey
+            data.uuid = uploaded_dataset.uuid
             trans.sa_session.add( data )
             trans.sa_session.flush()
             if library_bunch:
@@ -341,7 +342,7 @@ def create_paramfile( trans, uploaded_datasets ):
             # user cannot remove it unless the parent directory is writable.
             if link_data_only == 'copy_files' and trans.app.config.external_chown_script:
                 _chown( uploaded_dataset.path )
-        json_file.write( to_json_string( json ) + '\n' )
+        json_file.write( dumps( json ) + '\n' )
     json_file.close()
     if trans.app.config.external_chown_script:
         _chown( json_file_path )
@@ -366,7 +367,7 @@ def create_job( trans, params, tool, json_file_path, data_list, folder=None, his
         job.history_id = history.id
     job.tool_id = tool.id
     job.tool_version = tool.version
-    job.state = job.states.UPLOAD
+    job.set_state( job.states.UPLOAD )
     trans.sa_session.add( job )
     trans.sa_session.flush()
     log.info( 'tool %s created job id %d' % ( tool.id, job.id ) )
@@ -374,7 +375,7 @@ def create_job( trans, params, tool, json_file_path, data_list, folder=None, his
 
     for name, value in tool.params_to_strings( params, trans.app ).iteritems():
         job.add_parameter( name, value )
-    job.add_parameter( 'paramfile', to_json_string( json_file_path ) )
+    job.add_parameter( 'paramfile', dumps( json_file_path ) )
     object_store_id = None
     for i, dataset in enumerate( data_list ):
         if folder:
@@ -392,7 +393,7 @@ def create_job( trans, params, tool, json_file_path, data_list, folder=None, his
             trans.sa_session.add( dataset )
             # open( dataset.file_name, "w" ).close()
     job.object_store_id = object_store_id
-    job.state = job.states.NEW
+    job.set_state( job.states.NEW )
     job.set_handler(tool.get_job_handler(None))
     trans.sa_session.add( job )
     trans.sa_session.flush()

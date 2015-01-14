@@ -18,13 +18,13 @@ import pkg_resources
 
 import galaxy.webapps.tool_shed.model
 import galaxy.webapps.tool_shed.model.mapping
-import galaxy.web.framework
+import galaxy.web.framework.webapp
 from galaxy.webapps.tool_shed.framework.middleware import hg
 from galaxy import util
 
 log = logging.getLogger( __name__ )
 
-class CommunityWebApplication( galaxy.web.framework.WebApplication ):
+class CommunityWebApplication( galaxy.web.framework.webapp.WebApplication ):
     pass
 
 def add_ui_controllers( webapp, app ):
@@ -83,7 +83,7 @@ def app_factory( global_conf, **kwargs ):
     webapp.mapper.connect( 'api_key_retrieval',
                            '/api/authenticate/baseauth/',
                            controller='authenticate',
-                           action='get_api_key',
+                           action='get_tool_shed_api_key',
                            conditions=dict( method=[ "GET" ] ) )
     webapp.mapper.resource( 'category',
                             'categories',
@@ -94,8 +94,10 @@ def app_factory( global_conf, **kwargs ):
     webapp.mapper.resource( 'repository',
                             'repositories',
                             controller='repositories',
-                            collection={ 'get_repository_revision_install_info' : 'GET',
+                            collection={ 'add_repository_registry_entry' : 'POST',
+                                         'get_repository_revision_install_info' : 'GET',
                                          'get_ordered_installable_revisions' : 'GET',
+                                         'remove_repository_registry_entry' : 'POST',
                                          'repository_ids_for_setting_metadata' : 'GET',
                                          'reset_metadata_on_repositories' : 'POST',
                                          'reset_metadata_on_repository' : 'POST' },
@@ -117,6 +119,12 @@ def app_factory( global_conf, **kwargs ):
                             name_prefix='user_',
                             path_prefix='/api',
                             parent_resources=dict( member_name='user', collection_name='users' ) )
+    webapp.mapper.connect( 'repository_create_changeset_revision',
+                           '/api/repositories/:id/changeset_revision',
+                           controller='repositories',
+                           action='create_changeset_revision',
+                           conditions=dict( method=[ "POST" ] ) )
+
     webapp.finalize_config()
     # Wrap the webapp in some useful middleware
     if kwargs.get( 'middleware', True ):
@@ -218,11 +226,12 @@ def wrap_in_static( app, global_conf, **local_conf ):
     # Send to dynamic app by default
     urlmap["/"] = app
     # Define static mappings from config
-    urlmap["/static"] = Static( conf.get( "static_dir" ), cache_time )
-    urlmap["/images"] = Static( conf.get( "static_images_dir" ), cache_time )
-    urlmap["/static/scripts"] = Static( conf.get( "static_scripts_dir" ), cache_time )
-    urlmap["/static/style"] = Static( conf.get( "static_style_dir" ), cache_time )
-    urlmap["/favicon.ico"] = Static( conf.get( "static_favicon_dir" ), cache_time )
+    urlmap["/static"] = Static( conf.get( "static_dir", "./static/" ), cache_time )
+    urlmap["/images"] = Static( conf.get( "static_images_dir", "./static/images" ), cache_time )
+    urlmap["/static/scripts"] = Static( conf.get( "static_scripts_dir", "./static/scripts/" ), cache_time )
+    urlmap["/static/style"] = Static( conf.get( "static_style_dir", "./static/style/blue" ), cache_time )
+    urlmap["/favicon.ico"] = Static( conf.get( "static_favicon_dir", "./static/favicon.ico" ), cache_time )
+    urlmap["/robots.txt"] = Static( conf.get( "static_robots_txt", "./static/robots.txt" ), cache_time )
     # URL mapper becomes the root webapp
     return urlmap
 

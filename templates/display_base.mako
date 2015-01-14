@@ -93,9 +93,6 @@
                 });
             });
             
-            // Init history boxes.
-            //init_history_items( $("div.historyItemWrapper"), false, "nochanges" );
-            
             // Init user item rating.
             $('.user_rating_star').rating({
                 callback: function(rating, link) {
@@ -217,7 +214,7 @@
             %else:
                 Private ${get_class_display_name( item.__class__ )}
             %endif
-            | ${get_item_name( item )}
+            | ${get_item_name( item ) | h}
             
             <div style="float: right">
                 ${self.render_item_links( item )}

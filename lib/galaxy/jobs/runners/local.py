@@ -23,7 +23,7 @@ __all__ = [ 'LocalJobRunner' ]
 DEFAULT_POOL_SLEEP_TIME = 1
 # TODO: Set to false and just get rid of this option. It would simplify this
 # class nicely. -John
-DEFAULT_EMBED_METADATA_IN_JOB = False
+DEFAULT_EMBED_METADATA_IN_JOB = True
 
 
 class LocalJobRunner( BaseJobRunner ):
@@ -197,9 +197,9 @@ class LocalJobRunner( BaseJobRunner ):
         while proc.poll() is None:
             i += 1
             if (i % 20) == 0:
-                msg = job_wrapper.check_limits(runtime=datetime.datetime.now() - job_start)
-                if msg is not None:
-                    job_wrapper.fail(msg)
+                limit_state = job_wrapper.check_limits(runtime=datetime.datetime.now() - job_start)
+                if limit_state is not None:
+                    job_wrapper.fail(limit_state[1])
                     log.debug('(%s) Terminating process group' % job_id)
                     self._terminate(proc)
                     return True

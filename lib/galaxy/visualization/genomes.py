@@ -1,6 +1,6 @@
 import os, re, sys, glob, logging
 from bx.seq.twobit import TwoBitFile
-from galaxy.util.json import from_json_string
+from galaxy.util.json import loads
 from galaxy import model, util
 from galaxy.util.bunch import Bunch
 
@@ -31,10 +31,11 @@ class GenomeRegion( object ):
     A genomic region on an individual chromosome.
     """
 
-    def __init__( self, chrom = None, start = 0, end = 0 ):
+    def __init__( self, chrom = None, start = 0, end = 0, sequence=None ):
         self.chrom = chrom
         self.start = int( start )
         self.end = int( end )
+        self.sequence = sequence
 
     def __str__( self ):
         return self.chrom + ":" + str( self.start ) + "-" + str( self.end )
@@ -220,7 +221,7 @@ class Genomes( object ):
         user = trans.get_user()
         if user:
             if 'dbkeys' in user.preferences:
-                user_keys_dict = from_json_string( user.preferences[ 'dbkeys' ] )
+                user_keys_dict = loads( user.preferences[ 'dbkeys' ] )
             dbkeys.extend( [ (attributes[ 'name' ], key ) for key, attributes in user_keys_dict.items() ] )
 
         # Add app keys to dbkeys.
@@ -256,7 +257,7 @@ class Genomes( object ):
 
         # Look first in user's custom builds.
         if dbkey_user and 'dbkeys' in dbkey_user.preferences:
-            user_keys = from_json_string( dbkey_user.preferences['dbkeys'] )
+            user_keys = loads( dbkey_user.preferences['dbkeys'] )
             if dbkey in user_keys:
                 dbkey_attributes = user_keys[ dbkey ]
                 dbkey_name = dbkey_attributes[ 'name' ]
@@ -309,7 +310,7 @@ class Genomes( object ):
 
         # Look for key in owner's custom builds.
         if dbkey_owner and 'dbkeys' in dbkey_owner.preferences:
-            user_keys = from_json_string( dbkey_owner.preferences[ 'dbkeys' ] )
+            user_keys = loads( dbkey_owner.preferences[ 'dbkeys' ] )
             if dbkey in user_keys:
                 dbkey_attributes = user_keys[ dbkey ]
                 if 'fasta' in dbkey_attributes:
@@ -341,7 +342,7 @@ class Genomes( object ):
             # Built-in twobit.
             twobit_file_name = self.genomes[dbkey].twobit_file
         else:
-            user_keys = from_json_string( dbkey_user.preferences['dbkeys'] )
+            user_keys = loads( dbkey_user.preferences['dbkeys'] )
             dbkey_attributes = user_keys[ dbkey ]
             fasta_dataset = trans.sa_session.query( trans.app.model.HistoryDatasetAssociation ).get( dbkey_attributes[ 'fasta' ] )
             msg = fasta_dataset.convert_dataset( trans, 'twobit' )
@@ -356,6 +357,6 @@ class Genomes( object ):
             twobit = TwoBitFile( open( twobit_file_name ) )
             if chrom in twobit:
                 seq_data = twobit[chrom].get( int(low), int(high) )
-                return { 'dataset_type': 'refseq', 'data': seq_data }
+                return GenomeRegion( chrom=chrom, start=low, end=high, sequence=seq_data )
         except IOError:
             return None

@@ -7,6 +7,7 @@ from galaxy import util
 
 from galaxy.web import _future_expose_api as expose_api
 from galaxy.web import _future_expose_api_anonymous as expose_api_anonymous
+from galaxy.web import url_for
 
 from galaxy.web.base.controller import BaseAPIController
 from galaxy.web.base.controller import UsesHistoryDatasetAssociationMixin
@@ -15,13 +16,9 @@ from galaxy.web.base.controller import UsesLibraryMixin
 from galaxy.web.base.controller import UsesLibraryMixinItems
 from galaxy.web.base.controller import UsesTagsMixin
 
-from galaxy.dataset_collections.util import api_payload_to_create_params
-from galaxy.dataset_collections.util import dictify_dataset_collection_instance
-
-from galaxy.web.base.controller import url_for
-
 from galaxy.managers import histories
 from galaxy.managers import hdas
+from galaxy.managers.collections_util import api_payload_to_create_params, dictify_dataset_collection_instance
 
 import logging
 log = logging.getLogger( __name__ )
@@ -92,7 +89,7 @@ class HistoryContentsController( BaseAPIController, UsesHistoryDatasetAssociatio
         else:
             types = [ 'dataset', "dataset_collection" ]
 
-        contents_kwds = {'types': types}
+        contents_kwds = { 'types': types }
         if ids:
             ids = map( lambda id: trans.security.decode_id( id ), ids.split( ',' ) )
             contents_kwds[ 'ids' ] = ids
@@ -102,21 +99,29 @@ class HistoryContentsController( BaseAPIController, UsesHistoryDatasetAssociatio
             contents_kwds[ 'deleted' ] = kwd.get( 'deleted', None )
             contents_kwds[ 'visible' ] = kwd.get( 'visible', None )
             # details param allows a mixed set of summary and detailed hdas
-            #TODO: this is getting convoluted due to backwards compat
-            details = kwd.get( 'details', None ) or []
+            # Ever more convoluted due to backwards compat..., details
+            # should be considered deprecated in favor of more specific
+            # dataset_details (and to be implemented dataset_collection_details).
+            details = kwd.get( 'details', None ) or kwd.get( 'dataset_details', None ) or []
             if details and details != 'all':
                 details = util.listify( details )
 
         for content in history.contents_iter( **contents_kwds ):
-            if isinstance(content, trans.app.model.HistoryDatasetAssociation):
-                encoded_content_id = trans.security.encode_id( content.id )
-                detailed = details == 'all' or ( encoded_content_id in details )
+            encoded_content_id = trans.security.encode_id( content.id )
+            detailed = details == 'all' or ( encoded_content_id in details )
+
+            if isinstance( content, trans.app.model.HistoryDatasetAssociation ):
                 if detailed:
                     rval.append( self._detailed_hda_dict( trans, content ) )
                 else:
                     rval.append( self._summary_hda_dict( trans, history_id, content ) )
-            elif isinstance(content, trans.app.model.HistoryDatasetCollectionAssociation):
-                rval.append( self.__collection_dict( trans, content ) )
+
+            elif isinstance( content, trans.app.model.HistoryDatasetCollectionAssociation ):
+                if detailed:
+                    rval.append( self.__collection_dict( trans, content, view="element" ) )
+                else:
+                    rval.append( self.__collection_dict( trans, content ) )
+
         return rval
 
     #TODO: move to model or Mixin
@@ -132,22 +137,33 @@ class HistoryContentsController( BaseAPIController, UsesHistoryDatasetAssociatio
         """
         api_type = "file"
         encoded_id = trans.security.encode_id( hda.id )
+        encoded_dataset_id = trans.security.encode_id( hda.dataset_id );
+        
+        # TODO: handle failed_metadata here as well
         return {
             'id'    : encoded_id,
             'history_id' : encoded_history_id,
+            'dataset_id' : encoded_dataset_id,
             'name'  : hda.name,
             'type'  : api_type,
-            'state'  : hda.state,
+            'state'  : hda.dataset.state,
             'deleted': hda.deleted,
+            'extension': hda.extension,
             'visible': hda.visible,
             'purged': hda.purged,
+            'resubmitted': hda._state == trans.app.model.Dataset.states.RESUBMITTED,
             'hid'   : hda.hid,
             'history_content_type' : hda.history_content_type,
+            #'url'   : url_for( 'history_content_typed', history_id=encoded_history_id, id=encoded_id, type="dataset" ),
+            #TODO: this intermittently causes a routes.GenerationException - temp use the legacy route to prevent this
+            #   see also: https://trello.com/c/5d6j4X5y
+            #   see also: https://sentry.galaxyproject.org/galaxy/galaxy-main/group/20769/events/9352883/
             'url'   : url_for( 'history_content', history_id=encoded_history_id, id=encoded_id ),
         }
 
     def __collection_dict( self, trans, dataset_collection_instance, view="collection" ):
-        return dictify_dataset_collection_instance( dataset_collection_instance, security=trans.security, parent=dataset_collection_instance.history, view=view )
+        return dictify_dataset_collection_instance( dataset_collection_instance,
+            security=trans.security, parent=dataset_collection_instance.history, view=view )
 
     def _detailed_hda_dict( self, trans, hda ):
         """
@@ -199,10 +215,9 @@ class HistoryContentsController( BaseAPIController, UsesHistoryDatasetAssociatio
             )
             return self.__collection_dict( trans, dataset_collection_instance, view="element" )
         except Exception, e:
-            msg = "Error in history API at listing dataset collection: %s" % ( str(e) )
-            log.error( msg, exc_info=True )
+            log.exception( "Error in history API at listing dataset collection: %s", e )
             trans.response.status = 500
-            return msg
+            return { 'error': str( e ) }
 
     def __show_dataset( self, trans, id, **kwd ):
         hda = self.mgrs.hdas.get( trans, self._decode_id( trans, id ), check_ownership=False, check_accessible=True )
@@ -217,20 +232,45 @@ class HistoryContentsController( BaseAPIController, UsesHistoryDatasetAssociatio
     def create( self, trans, history_id, payload, **kwd ):
         """
         create( self, trans, history_id, payload, **kwd )
-        * POST /api/histories/{history_id}/contents
+        * POST /api/histories/{history_id}/contents/{type}
             create a new HDA by copying an accessible LibraryDataset
 
         :type   history_id: str
         :param  history_id: encoded id string of the new HDA's History
+        :type   type: str
+        :param  type: Type of history content - 'dataset' (default) or
+                      'dataset_collection'.
         :type   payload:    dict
         :param  payload:    dictionary structure containing::
-            copy from library:
+            copy from library (for type 'dataset'):
             'source'    = 'library'
             'content'   = [the encoded id from the library dataset]
 
-            copy from HDA:
+            copy from history dataset (for type 'dataset'):
             'source'    = 'hda'
             'content'   = [the encoded id from the HDA]
+
+            copy from history dataset collection (for type 'dataset_collection')
+            'source'    = 'hdca'
+            'content'   = [the encoded id from the HDCA]
+
+            create new history dataset collection (for type 'dataset_collection')
+            'source'              = 'new_collection' (default 'source' if type is
+                                    'dataset_collection' - no need to specify this)
+            'collection_type'     = For example, "list", "paired", "list:paired".
+            'name'                = Name of new dataset collection.
+            'element_identifiers' = Recursive list structure defining collection.
+                                    Each element must have 'src' which can be
+                                    'hda', 'ldda', 'hdca', or 'new_collection',
+                                    as well as a 'name' which is the name of
+                                    element (e.g. "forward" or "reverse" for
+                                    paired datasets, or arbitrary sample names
+                                    for instance for lists). For all src's except
+                                    'new_collection' - a encoded 'id' attribute
+                                    must be included wiht element as well.
+                                    'new_collection' sources must defined a
+                                    'collection_type' and their own list of
+                                    (potentially) nested 'element_identifiers'.
 
         ..note:
             Currently, a user can only copy an HDA from a history that the user owns.
@@ -238,6 +278,9 @@ class HistoryContentsController( BaseAPIController, UsesHistoryDatasetAssociatio
         :rtype:     dict
         :returns:   dictionary containing detailed information for the new HDA
         """
+        # TODO: Flush out create new collection documentation above, need some
+        # examples. See also bioblend and API tests for specific examples.
+
         # get the history, if anon user and requesting current history - allow it
         if( ( trans.user == None )
         and ( history_id == trans.security.encode_id( trans.history.id ) ) ):
@@ -292,9 +335,28 @@ class HistoryContentsController( BaseAPIController, UsesHistoryDatasetAssociatio
         return hda_dict
 
     def __create_dataset_collection( self, trans, history, payload, **kwd ):
-        create_params = api_payload_to_create_params( payload )
+        source = kwd.get("source", "new_collection")
         service = trans.app.dataset_collections_service
-        dataset_collection_instance = service.create( trans, parent=history, **create_params )
+        if source == "new_collection":
+            create_params = api_payload_to_create_params( payload )
+            dataset_collection_instance = service.create(
+                trans,
+                parent=history,
+                **create_params
+            )
+        elif source == "hdca":
+            content = payload.get( 'content', None )
+            if content is None:
+                raise exceptions.RequestParameterMissingException( "'content' id of target to copy is missing" )
+            dataset_collection_instance = service.copy(
+                trans=trans,
+                parent=history,
+                source="hdca",
+                encoded_source_id=content,
+            )
+        else:
+            message = "Invalid 'source' parameter in request %s" % source
+            raise exceptions.RequestParameterInvalidException(message)
         return self.__collection_dict( trans, dataset_collection_instance, view="element" )
 
     @expose_api_anonymous

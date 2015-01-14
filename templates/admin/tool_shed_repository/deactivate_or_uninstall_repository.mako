@@ -10,30 +10,30 @@ ${render_galaxy_repository_actions( repository )}
 %endif
 
 <div class="toolForm">
-    <div class="toolFormTitle">${repository.name}</div>
+    <div class="toolFormTitle">${repository.name|h}</div>
     <div class="toolFormBody">
         <form name="deactivate_or_uninstall_repository" id="deactivate_or_uninstall_repository" action="${h.url_for( controller='admin_toolshed', action='deactivate_or_uninstall_repository', id=trans.security.encode_id( repository.id ) )}" method="post" >
             <div class="form-row">
                 <label>Description:</label>
-                ${repository.description}
+                ${repository.description|h}
                 <div style="clear: both"></div>
             </div>
             <div class="form-row">
                 <label>Revision:</label>
-                ${repository.changeset_revision}</a>
+                ${repository.changeset_revision|h}</a>
             </div>
             <div class="form-row">
                 <label>Tool shed:</label>
-                ${repository.tool_shed}
+                ${repository.tool_shed|h}
                 <div style="clear: both"></div>
             </div>
             <div class="form-row">
                 <label>Owner:</label>
-                ${repository.owner}
+                ${repository.owner|h}
             </div>
             <div class="form-row">
                 <label>Deleted:</label>
-                ${repository.deleted}
+                ${repository.deleted|h}
             </div>
             <div class="form-row">
                 <%
@@ -108,12 +108,9 @@ ${render_galaxy_repository_actions( repository )}
                     </div>
                     <div style="clear: both"></div>
                     <br/>
-                    <%
-                        from tool_shed.util.repository_dependency_util import get_repository_tuple_for_installed_repository_manager
-                        from tool_shed.util.tool_dependency_util import get_tool_dependency_tuple_for_installed_repository_manager
-                        
+                    <%                        
                         irm = trans.app.installed_repository_manager
-                        repository_tup = get_repository_tuple_for_installed_repository_manager( repository )
+                        repository_tup = irm.get_repository_tuple_for_installed_repository_manager( repository )
 
                         # Get installed repositories that this repository requires.
                         installed_dependent_repositories = []
@@ -189,7 +186,7 @@ ${render_galaxy_repository_actions( repository )}
                     ##hack to mimic check box
                     <input type="hidden" name="remove_from_disk" value="true"/><input type="hidden" name="remove_from_disk" value="true"/>
                 %endif
-                <input type="submit" name="deactivate_or_uninstall_repository_button" value="${deactivate_uninstall_button_text}"/>
+                <input type="submit" name="deactivate_or_uninstall_repository_button" value="${deactivate_uninstall_button_text|h}"/>
             </div>
         </form>
     </div>

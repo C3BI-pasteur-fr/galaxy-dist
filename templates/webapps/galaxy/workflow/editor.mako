@@ -7,16 +7,6 @@
 %>
 </%def>
 
-## <%def name="late_javascripts()">
-##     <script type='text/javascript' src="${h.url_for('/static/scripts/galaxy.panels.js')}"> </script>
-##     <script type="text/javascript">
-##         ensure_dd_helper();
-##         make_left_panel( $("#left"), $("#center"), $("#left-border" ) );
-##         make_right_panel( $("#right"), $("#center"), $("#right-border" ) );
-##         ## handle_minwidth_hint = rp.handle_minwidth_hint;
-##     </script>
-## </%def>
-
 <%def name="javascripts()">
 
     ${parent.javascripts()}
@@ -51,7 +41,7 @@
 
         // URLs used by galaxy.workflows.js
         var tool_search_url = "${h.url_for( controller='root', action='tool_search' )}",
-            get_datatypes_url = "${h.url_for( controller='workflow', action='get_datatypes' )}",
+            get_datatypes_url = "${h.url_for( '/api/datatypes/mapping' )}",
             load_workflow_url = "${h.url_for( controller='workflow', action='load_workflow' )}",
             run_workflow_url = "${h.url_for( controller='root', action='index', workflow_id=trans.security.encode_id(stored.id))}",
             rename_async_url = "${h.url_for( controller='workflow', action='rename_async', id=trans.security.encode_id(stored.id) )}",
@@ -65,7 +55,7 @@
     %>
         // Post-job action vars.
         var pja_list = "${ActionBox.get_add_list()}",
-            get_pja_form = function(pja) {
+            get_pja_form = function(pja, node) {
                 var p_str = '';
                 // FIXME: this writes JS code; this logic should be codified in galaxy.workflows.js
                 ${ActionBox.get_forms(trans)}
@@ -86,18 +76,6 @@
 
     <style type="text/css">
     body { margin: 0; padding: 0; overflow: hidden; }
-
-    /* Wider right panel */
-    ## #center       { right: 309px; }
-    ## #right-border { right: 300px; }
-    ## #right        { width: 300px; }
-    ## /* Relative masthead size */
-    ## #masthead { height: 2.5em; }
-    ## #masthead div.title { font-size: 1.8em; }
-    ## #left, #left-border, #center, #right-border, #right {
-    ##     top: 2.5em;
-    ##     margin-top: 7px;
-    ## }
 
     #left {
         background: #C1C9E5 url(${h.url_for('/static/style/menu_bg.png')}) top repeat-x;
@@ -354,20 +332,27 @@
                 <em><strong>Search did not match any tools.</strong></em>
             </div>
             <div>&nbsp;</div>
+
             <div class="toolMenuGroupHeader">Workflow control</div>
-            <div class="toolSectionTitle" id="title___workflow__input__">
-                <span>Inputs</span>
-            </div>
-            <div id="__workflow__input__" class="toolSectionBody">
-                <div class="toolSectionBg">
-                    <div class="toolTitle">
-                        <a href="#" onclick="add_node_for_module( 'data_input', 'Input Dataset' )">Input dataset</a>
-                    </div>
-                    <div class="toolTitle">
-                        <a href="#" onclick="add_node_for_module( 'data_collection_input', 'Input Dataset Collection' )">Input dataset collection</a>
-                    </div>
+            <%
+                from galaxy.workflow.modules import load_module_sections
+            %>
+            %for module_section in load_module_sections( trans ):
+                <% section_title = module_section["title"] %>
+                <% section_name = module_section["name"] %>
+                <div class="toolSectionTitle" id="title___workflow__${section_name}__">
+                <span>${section_title}</span>
                 </div>
-            </div>
+                <div id="__workflow__${section_name}__" class="toolSectionBody">
+                <div class="toolSectionBg">
+                %for module in module_section["modules"]:
+                    <div class="toolTitle">
+                        <a href="#" onclick="add_node_for_module( '${module['name']}', '${module['title']}' )">${module['description']}</a>
+                    </div><!-- end toolTitle -->
+                %endfor
+                </div>
+                </div>
+            %endfor
         </div>
     </div>
 

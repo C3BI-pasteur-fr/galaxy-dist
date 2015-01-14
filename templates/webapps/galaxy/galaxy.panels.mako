@@ -49,7 +49,7 @@
         <script>
             Raven.config('${app.config.sentry_dsn_public}').install();
             %if trans.user:
-                Raven.setUser( { email: "${trans.user.email}" } );
+                Raven.setUser( { email: "${trans.user.email|h}" } );
             %endif
         </script>
     %endif
@@ -100,7 +100,7 @@
                 "libs/backbone/backbone": { exports: "Backbone" },
             }
         });
-        var galaxy_config = ${ h.to_json_string( self.galaxy_config ) };
+        var galaxy_config = ${ h.dumps( self.galaxy_config ) };
         
     </script>
 </%def>

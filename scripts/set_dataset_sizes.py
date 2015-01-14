@@ -4,42 +4,31 @@ import os, sys
 from ConfigParser import ConfigParser
 from optparse import OptionParser
 
-default_config = os.path.abspath( os.path.join( os.path.dirname( __file__ ), '..', 'universe_wsgi.ini') )
+default_config = os.path.abspath( os.path.join( os.path.dirname( __file__ ), '..', 'config/galaxy.ini') )
 
 parser = OptionParser()
-parser.add_option( '-c', '--config', dest='config', help='Path to Galaxy config file (universe_wsgi.ini)', default=default_config )
+parser.add_option( '-c', '--config', dest='config', help='Path to Galaxy config file (config/galaxy.ini)', default=default_config )
 ( options, args ) = parser.parse_args()
 
 def init():
 
     options.config = os.path.abspath( options.config )
-    os.chdir( os.path.dirname( options.config ) )
-    sys.path.append( 'lib' )
+    sys.path.append( os.path.join( os.path.dirname( __file__ ), '..', 'lib' ) )
 
     from galaxy import eggs
     import pkg_resources
-    import galaxy.config
-    from galaxy.objectstore import build_object_store_from_config    
 
-    config_parser = ConfigParser( dict( here = os.getcwd(),
+    config = ConfigParser( dict( file_path = 'database/files',
                                  database_connection = 'postgres://galaxytest-pasteur:galaxytest-pasteur@localhost/galaxytest-pasteur' ) )
-    config_parser.read( os.path.basename( options.config ) )
-
-    config_dict = {}
-    for key, value in config_parser.items( "app:main" ):
-        config_dict[key] = value
-
-    config = galaxy.config.Configuration( **config_dict )
-    object_store = build_object_store_from_config( config )
+    config.read( options.config )
 
     from galaxy.model import mapping
 
-#    return mapping.init( config.get( 'app:main', 'file_path' ), config.get( 'app:main', 'database_connection' ), create_tables = False )
-    return mapping.init( config.file_path, config.database_connection, create_tables = False, object_store = object_store ), object_store
+    return mapping.init( config.get( 'app:main', 'file_path' ), config.get( 'app:main', 'database_connection' ), create_tables = False )
 
 if __name__ == '__main__':
     print 'Loading Galaxy model...'
-    model, object_store = init()
+    model = init()
     sa_session = model.context.current
 
     set = 0
@@ -60,5 +49,4 @@ if __name__ == '__main__':
             print '\rCompleted %i%%' % percent,
             sys.stdout.flush()
     sa_session.flush()
-    object_store.shutdown()
     print 'Completed 100%%'

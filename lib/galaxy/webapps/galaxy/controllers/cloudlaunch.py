@@ -13,10 +13,11 @@ import time
 from galaxy import eggs
 from galaxy import web
 from galaxy.web.base.controller import BaseUIController
-from galaxy.util.json import to_json_string
+from galaxy.util.json import dumps
 
 eggs.require('PyYAML')
 eggs.require('boto')
+eggs.require('simplejson')
 eggs.require('bioblend')
 
 from boto.exception import EC2ResponseError
@@ -30,6 +31,12 @@ log = logging.getLogger(__name__)
 PKEY_PREFIX = 'gxy_pkey'
 DEFAULT_KEYPAIR = 'cloudman_keypair'
 CLOUDMAN_TAG_KEY = 'galaxy:cloudman'
+
+DEFAULT_INSTANCE_TYPES = [
+    ("c3.large", "Compute optimized Large (2 vCPU/4GB RAM)"),
+    ("c3.2xlarge", "Compute optimized 2xLarge (8 vCPU/15GB RAM)"),
+    ("c3.8xlarge", "Compute optimized 8xLarge (32 vCPU/60GB RAM)"),
+]
 
 
 class CloudController(BaseUIController):
@@ -47,7 +54,8 @@ class CloudController(BaseUIController):
                                    default_keypair=DEFAULT_KEYPAIR,
                                    share_string=share_string,
                                    ami=ami,
-                                   bucket_default=bucket_default)
+                                   bucket_default=bucket_default,
+                                   instance_types=DEFAULT_INSTANCE_TYPES)
 
     @web.expose
     def get_account_info(self, trans, key_id, secret):
@@ -60,7 +68,7 @@ class CloudController(BaseUIController):
         kps = ec2_conn.get_all_key_pairs()
         account_info['clusters'] = cml.get_clusters_pd()
         account_info['keypairs'] = [akp.name for akp in kps]
-        return to_json_string(account_info)
+        return dumps(account_info)
 
     @web.expose
     def launch_instance(self, trans, cluster_name, password, key_id, secret,
@@ -70,9 +78,18 @@ class CloudController(BaseUIController):
         cfg = cloudman.CloudManConfig(key_id, secret, cluster_name, ami,
                                       instance_type, password, placement=zone)
         cml = cloudman.launch.CloudManLauncher(key_id, secret)
-        result = cml.launch(cluster_name, ami, instance_type, password,
-                            cfg.kernel_id, cfg.ramdisk_id, cfg.key_name,
-                            cfg.security_groups, cfg.placement)
+        # This should probably be handled better on the bioblend side, but until
+        # an egg update can be made, this needs to conditionally include the
+        # parameter or not, even if the value is None.
+        if bucket_default:
+            result = cml.launch(cluster_name, ami, instance_type, password,
+                                cfg.kernel_id, cfg.ramdisk_id, cfg.key_name,
+                                cfg.security_groups, cfg.placement,
+                                bucket_default=bucket_default)
+        else:
+            result = cml.launch(cluster_name, ami, instance_type, password,
+                                cfg.kernel_id, cfg.ramdisk_id, cfg.key_name,
+                                cfg.security_groups, cfg.placement)
         # result is a dict with sg_names, kp_name, kp_material, rs, and instance_id
         if not result['rs']:
             trans.response.status = 400
@@ -94,7 +111,7 @@ class CloudController(BaseUIController):
             kp_material_tag = fname[fname.rfind(PKEY_PREFIX) + len(PKEY_PREFIX):]
         else:
             kp_material_tag = None
-        return to_json_string({'cluster_name': cluster_name,
+        return dumps({'cluster_name': cluster_name,
                                'instance_id': result['rs'].instances[0].id,
                                'image_id': result['rs'].instances[0].image_id,
                                'public_dns_name': result['rs'].instances[0].public_dns_name,

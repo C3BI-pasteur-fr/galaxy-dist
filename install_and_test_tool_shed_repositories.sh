@@ -1,5 +1,9 @@
 #!/bin/sh
 
+# Enable verbose test errors for install and test framework.
+GALAXY_TEST_VERBOSE_ERRORS="True"
+export GALAXY_TEST_VERBOSE_ERRORS
+
 # A good place to look for nose info: http://somethingaboutorange.com/mrl/projects/nose/
 
 # The test/install_and_test_tool_shed_repositories/functional_tests.py cannot be executed directly because it must
@@ -33,7 +37,7 @@ if [ -z $GALAXY_INSTALL_TEST_TOOL_SHED_URL ] ; then
 fi
 
 if [ -z "$GALAXY_INSTALL_TEST_TOOL_SHEDS_CONF" ] ; then
-	if grep --quiet $GALAXY_INSTALL_TEST_TOOL_SHED_URL tool_sheds_conf.xml; then
+	if grep --quiet $GALAXY_INSTALL_TEST_TOOL_SHED_URL config/tool_sheds_conf.xml.sample; then
 		echo "Tool sheds configuration tool_sheds_conf.xml ok, proceeding."
 	else
 		echo "ERROR: Tool sheds configuration tool_sheds_conf.xml does not have an entry for $GALAXY_INSTALL_TEST_TOOL_SHED_URL."

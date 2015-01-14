@@ -4,8 +4,7 @@ from galaxy.web.base.controller import BaseAPIController
 from galaxy.web.base.controller import UsesHistoryMixin
 from galaxy.web.base.controller import UsesLibraryMixinItems
 
-from galaxy.dataset_collections.util import api_payload_to_create_params
-from galaxy.dataset_collections.util import dictify_dataset_collection_instance
+from galaxy.managers.collections_util import api_payload_to_create_params, dictify_dataset_collection_instance
 
 from logging import getLogger
 log = getLogger( __name__ )
@@ -57,7 +56,8 @@ class DatasetCollectionsController(
 
     @expose_api
     def show( self, trans, instance_type, id, **kwds ):
-        dataset_collection_instance = self.__service( trans ).get(
+        dataset_collection_instance = self.__service( trans ).get_dataset_collection_instance(
+            trans,
             id=id,
             instance_type=instance_type,
         )
@@ -68,7 +68,12 @@ class DatasetCollectionsController(
         else:
             trans.status = 501
             return
-        return dictify_dataset_collection_instance( trans, dataset_collection_instance, parent )
+        return dictify_dataset_collection_instance(
+            dataset_collection_instance,
+            security=trans.security,
+            parent=parent,
+            view='element'
+        )
 
     def __service( self, trans ):
         service = trans.app.dataset_collections_service

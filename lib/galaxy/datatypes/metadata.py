@@ -6,7 +6,6 @@ Galaxy Metadata
 import copy
 import cPickle
 import json
-import logging
 import os
 import shutil
 import sys
@@ -15,13 +14,20 @@ import weakref
 
 from os.path import abspath
 
-import galaxy.model
-from galaxy.util import listify, stringify_dictionary_keys, string_as_bool
-from galaxy.util.odict import odict
-from galaxy.util import in_directory
-from galaxy.web import form_builder
+from galaxy import eggs
+eggs.require( "SQLAlchemy >= 0.4" )
 from sqlalchemy.orm import object_session
 
+import galaxy.model
+from galaxy.util import listify
+from galaxy.util.object_wrapper import sanitize_lists_to_string
+from galaxy.util import stringify_dictionary_keys
+from galaxy.util import string_as_bool
+from galaxy.util import in_directory
+from galaxy.util.odict import odict
+from galaxy.web import form_builder
+
+import logging
 log = logging.getLogger(__name__)
 
 STATEMENTS = "__galaxy_statements__" #this is the name of the property in a Datatype class where new metadata spec element Statements are stored
@@ -126,25 +132,43 @@ class MetadataCollection( object ):
                 rval[key] = self.spec[key].param.make_copy( value, target_context=self, source_context=to_copy )
         return rval
 
-    def from_JSON_dict( self, filename ):
+    def from_JSON_dict( self, filename=None, path_rewriter=None, json_dict=None ):
         dataset = self.parent
-        log.debug( 'loading metadata from file for: %s %s' % ( dataset.__class__.__name__, dataset.id ) )
-        JSONified_dict = json.load( open( filename ) )
+        if filename is not None:
+            log.debug( 'loading metadata from file for: %s %s' % ( dataset.__class__.__name__, dataset.id ) )
+            JSONified_dict = json.load( open( filename ) )
+        elif json_dict is not None:
+            log.debug( 'loading metadata from dict for: %s %s' % ( dataset.__class__.__name__, dataset.id ) )
+            if isinstance( json_dict, basestring ):
+                JSONified_dict = json.loads( json_dict )
+            elif isinstance( json_dict, dict ):
+                JSONified_dict = json_dict
+            else:
+                raise ValueError( "json_dict must be either a dictionary or a string, got %s."  % ( type( json_dict ) ) )
+        else:
+            raise ValueError( "You must provide either a filename or a json_dict" )
         for name, spec in self.spec.items():
             if name in JSONified_dict:
-                dataset._metadata[ name ] = spec.param.from_external_value( JSONified_dict[ name ], dataset )
+                from_ext_kwds = {}
+                external_value = JSONified_dict[ name ]
+                param = spec.param
+                if isinstance( param, FileParameter ):
+                    from_ext_kwds[ 'path_rewriter' ] = path_rewriter
+                dataset._metadata[ name ] = param.from_external_value( external_value, dataset, **from_ext_kwds )
             elif name in dataset._metadata:
                 #if the metadata value is not found in our externally set metadata but it has a value in the 'old'
                 #metadata associated with our dataset, we'll delete it from our dataset's metadata dict
                 del dataset._metadata[ name ]
 
-    def to_JSON_dict( self, filename ):
+    def to_JSON_dict( self, filename=None ):
         #galaxy.model.customtypes.json_encoder.encode()
         meta_dict = {}
         dataset_meta_dict = self.parent._metadata
         for name, spec in self.spec.items():
             if name in dataset_meta_dict:
                 meta_dict[ name ] = spec.param.to_external_value( dataset_meta_dict[ name ] )
+        if filename is None:
+            return json.dumps( meta_dict )
         json.dump( meta_dict, open( filename, 'wb+' ) )
 
     def __getstate__( self ):
@@ -208,6 +232,9 @@ class MetadataParameter( object ):
 
     def to_string( self, value ):
         return str( value )
+
+    def to_safe_string( self, value ):
+        return sanitize_lists_to_string( self.to_string( value ) )
 
     def make_copy( self, value, target_context = None, source_context = None ):
         return copy.deepcopy( value )
@@ -457,6 +484,10 @@ class DictParameter( MetadataParameter ):
     def to_string( self, value ):
         return  json.dumps( value )
 
+    def to_safe_string( self, value ):
+        # We do not sanitize json dicts
+        return json.safe_dumps( value )
+
 
 class PythonObjectParameter( MetadataParameter ):
 
@@ -486,6 +517,10 @@ class FileParameter( MetadataParameter ):
         if not value:
             return str( self.spec.no_value )
         return value.file_name
+
+    def to_safe_string( self, value ):
+        # We do not sanitize file names
+        return self.to_string( value )
 
     def get_html_field( self, value=None, context=None, other_values=None, **kwd ):
         context = context or {}
@@ -521,7 +556,7 @@ class FileParameter( MetadataParameter ):
             value = value.id
         return value
 
-    def from_external_value( self, value, parent ):
+    def from_external_value( self, value, parent, path_rewriter=None ):
         """
         Turns a value read from a external dict into its value to be pushed directly into the metadata dict.
         """
@@ -532,8 +567,13 @@ class FileParameter( MetadataParameter ):
             if mf is None:
                 mf = self.new_file( dataset = parent, **value.kwds )
             # Ensure the metadata file gets updated with content
-            parent.dataset.object_store.update_from_file( mf, file_name=value.file_name, extra_dir='_metadata_files', extra_dir_at_root=True, alt_name=os.path.basename(mf.file_name) )
-            os.unlink( value.file_name )
+            file_name = value.file_name
+            if path_rewriter:
+                # Job may have run with a different (non-local) tmp/working
+                # directory. Correct.
+                file_name = path_rewriter( file_name )
+            parent.dataset.object_store.update_from_file( mf, file_name=file_name, extra_dir='_metadata_files', extra_dir_at_root=True, alt_name=os.path.basename(mf.file_name) )
+            os.unlink( file_name )
             value = mf.id
         return value
 
@@ -722,7 +762,7 @@ class JobExternalOutputMetadataWrapper( object ):
                 sa_session.flush()
             metadata_files_list.append( metadata_files )
         #return command required to build
-        return "%s %s %s %s %s %s %s %s" % ( os.path.join( exec_dir, 'set_metadata.sh' ), dataset_files_path, tmp_dir, config_root, config_file, datatypes_config, job_metadata, " ".join( map( __metadata_files_list_to_cmd_line, metadata_files_list ) ) )
+        return "%s %s %s %s %s %s %s %s" % ( os.path.join( exec_dir, 'set_metadata.sh' ), dataset_files_path, compute_tmp_dir or tmp_dir, config_root, config_file, datatypes_config, job_metadata, " ".join( map( __metadata_files_list_to_cmd_line, metadata_files_list ) ) )
 
     def external_metadata_set_successfully( self, dataset, sa_session ):
         metadata_files = self.get_output_filenames_by_dataset( dataset, sa_session )

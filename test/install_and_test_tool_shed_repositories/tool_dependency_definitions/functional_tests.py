@@ -332,13 +332,14 @@ def main():
                    template_path = "templates",
                    tool_config_file = ','.join( [ galaxy_tool_conf_file, galaxy_shed_tool_conf_file ] ),
                    tool_data_path = tool_data_path,
-                   tool_data_table_config_path = galaxy_tool_data_table_conf_file,
                    tool_dependency_dir = tool_dependency_dir,
                    tool_path = tool_path,
                    tool_parse_help = False,
                    tool_sheds_config_file = galaxy_tool_sheds_conf_file,
                    update_integrated_tool_panel = False,
                    use_heartbeat = False )
+    if os.path.exists( galaxy_tool_data_table_conf_file ):
+        kwargs[ 'tool_data_table_config_path' ] = galaxy_tool_data_table_conf_file
     galaxy_config_file = os.environ.get( 'GALAXY_INSTALL_TEST_INI_FILE', None )
     # If the user has passed in a path for the .ini file, do not overwrite it.
     if not galaxy_config_file:
@@ -347,8 +348,8 @@ def main():
         for label in kwargs:
             config_tuple = label, kwargs[ label ]
             config_items.append( config_tuple )
-        # Write a temporary file, based on universe_wsgi.ini.sample, using the configuration options defined above.
-        generate_config_file( 'universe_wsgi.ini.sample', galaxy_config_file, config_items )
+        # Write a temporary file, based on galaxy.ini.sample, using the configuration options defined above.
+        generate_config_file( 'config/galaxy.ini.sample', galaxy_config_file, config_items )
     kwargs[ 'tool_config_file' ] = [ galaxy_tool_conf_file, galaxy_shed_tool_conf_file ]
     # Set the global_conf[ '__file__' ] option to the location of the temporary .ini file, which gets passed to set_metadata.sh.
     kwargs[ 'global_conf' ] = install_and_test_base_util.get_webapp_global_conf()

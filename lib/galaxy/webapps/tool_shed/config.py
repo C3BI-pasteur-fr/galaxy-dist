@@ -27,6 +27,10 @@ class Configuration( object ):
     def __init__( self, **kwargs ):
         self.config_dict = kwargs
         self.root = kwargs.get( 'root_dir', '.' )
+
+        # Resolve paths of other config files
+        self.__parse_config_file_options( kwargs )
+
         # Collect the umask and primary gid from the environment
         self.umask = os.umask( 077 ) # get the current umask
         os.umask( self.umask ) # can't get w/o set, so set it back
@@ -36,12 +40,13 @@ class Configuration( object ):
         self.database_connection = kwargs.get( "database_connection", False )
         self.database_engine_options = get_database_engine_options( kwargs )
         self.database_create_tables = string_as_bool( kwargs.get( "database_create_tables", "True" ) )
+        # Analytics
+        self.ga_code = kwargs.get( "ga_code", None )
         # Where dataset files are stored
         self.file_path = resolve_path( kwargs.get( "file_path", "database/community_files" ), self.root )
         self.new_file_path = resolve_path( kwargs.get( "new_file_path", "database/tmp" ), self.root )
         self.cookie_path = kwargs.get( "cookie_path", "/" )
         self.enable_quotas = string_as_bool( kwargs.get( 'enable_quotas', False ) )
-        self.datatypes_config = kwargs.get( 'datatypes_config_file', 'datatypes_conf.xml' )
         self.test_conf = resolve_path( kwargs.get( "test_conf", "" ), self.root )
         self.id_secret = kwargs.get( "id_secret", "USING THE DEFAULT IS NOT SECURE!" )
         # Tool stuff
@@ -51,8 +56,8 @@ class Configuration( object ):
         self.tool_path = resolve_path( kwargs.get( "tool_path", "tools" ), self.root )
         self.tool_secret = kwargs.get( "tool_secret", "" )
         self.tool_data_path = resolve_path( kwargs.get( "tool_data_path", "shed-tool-data" ), os.getcwd() )
-        self.tool_data_table_config_path = resolve_path( kwargs.get( 'tool_data_table_config_path', 'tool_data_table_conf.xml' ), self.root )
-        self.shed_tool_data_table_config = resolve_path( kwargs.get( 'shed_tool_data_table_config', 'shed_tool_data_table_conf.xml' ), self.root )
+        self.integrated_tool_panel_config = resolve_path( kwargs.get( 'integrated_tool_panel_config', 'integrated_tool_panel.xml' ), self.root )
+        self.builds_file_path = resolve_path( kwargs.get( "builds_file_path", os.path.join( self.tool_data_path, 'shared', 'ucsc', 'builds.txt') ), self.root )
         self.len_file_path = resolve_path( kwargs.get( "len_file_path", os.path.join( self.tool_data_path, 'shared','ucsc','chrom') ), self.root )
         self.ftp_upload_dir = kwargs.get( 'ftp_upload_dir', None )
         # Install and test framework for testing tools contained in repositories.
@@ -65,6 +70,8 @@ class Configuration( object ):
             self.tool_dependency_dir = None
             self.use_tool_dependencies = False
         self.update_integrated_tool_panel = False
+        # Galaxy flavor Docker Image
+        self.enable_galaxy_flavor_docker_image = string_as_bool( kwargs.get( "enable_galaxy_flavor_docker_image", "False" ) )
         self.use_remote_user = string_as_bool( kwargs.get( "use_remote_user", "False" ) )
         self.user_activation_on = kwargs.get( 'user_activation_on', None )
         self.activation_grace_period = kwargs.get( 'activation_grace_period', None )
@@ -83,6 +90,7 @@ class Configuration( object ):
         self.template_path = resolve_path( kwargs.get( "template_path", "templates" ), self.root )
         self.template_cache = resolve_path( kwargs.get( "template_cache_path", "database/compiled_templates/community" ), self.root )
         self.admin_users = kwargs.get( "admin_users", "" )
+        self.admin_users_list = [u.strip() for u in self.admin_users.split(',') if u]
         self.sendmail_path = kwargs.get('sendmail_path',"/usr/sbin/sendmail")
         self.mailing_join_addr = kwargs.get('mailing_join_addr',"galaxy-announce-join@bx.psu.edu")
         self.error_email_to = kwargs.get( 'error_email_to', None )
@@ -127,6 +135,50 @@ class Configuration( object ):
         if global_conf and "__file__" in global_conf:
             global_conf_parser.read(global_conf['__file__'])
         self.running_functional_tests = string_as_bool( kwargs.get( 'running_functional_tests', False ) )
+        self.citation_cache_type = kwargs.get( "citation_cache_type", "file" )
+        self.citation_cache_data_dir = resolve_path( kwargs.get( "citation_cache_data_dir", "database/tool_shed_citations/data" ), self.root )
+        self.citation_cache_lock_dir = resolve_path( kwargs.get( "citation_cache_lock_dir", "database/tool_shed_citations/locks" ), self.root )
+
+    def __parse_config_file_options( self, kwargs ):
+        defaults = dict(
+            datatypes_config_file = [ 'config/datatypes_conf.xml', 'datatypes_conf.xml', 'config/datatypes_conf.xml.sample' ],
+            shed_tool_data_table_config = [ 'shed_tool_data_table_conf.xml', 'config/shed_tool_data_table_conf.xml' ],
+        )
+
+        listify_defaults = dict(
+            tool_data_table_config_path = [ 'config/tool_data_table_conf.xml', 'tool_data_table_conf.xml', 'config/tool_data_table_conf.xml.sample' ],
+        )
+
+        for var, defaults in defaults.items():
+            if kwargs.get( var, None ) is not None:
+                path = kwargs.get( var )
+            else:
+                for default in defaults:
+                    if os.path.exists( resolve_path( default, self.root ) ):
+                        path = default
+                        break
+                else:
+                    path = defaults[-1]
+            setattr( self, var, resolve_path( path, self.root ) )
+
+        for var, defaults in listify_defaults.items():
+            paths = []
+            if kwargs.get( var, None ) is not None:
+                paths = listify( kwargs.get( var ) )
+            else:
+                for default in defaults:
+                    for path in listify( default ):
+                        if not os.path.exists( resolve_path( path, self.root ) ):
+                            break
+                    else:
+                        paths = listify( default )
+                        break
+                else:
+                    paths = listify( defaults[-1] )
+            setattr( self, var, [ resolve_path( x, self.root ) for x in paths ] )
+
+        # Backwards compatibility for names used in too many places to fix
+        self.datatypes_config = self.datatypes_config_file
 
     def get( self, key, default ):
         return self.config_dict.get( key, default )

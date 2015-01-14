@@ -60,13 +60,12 @@
                 "libs/backbone/backbone": { exports: "Backbone" },
             }
         });
-        require( ["base", "viz/visualization", "viz/trackster_ui", "viz/trackster/tracks"], 
-             function( base, visualization, trackster_ui, tracks ) {
+        require( ["viz/trackster"], function(trackster) {
 
             // FIXME: deliberate global required for now due to requireJS integration.
             view = null;
-
-            var ui = new (trackster_ui.TracksterUI)( "${h.url_for('/')}" )
+            
+            var ui = new (trackster.TracksterUI)( "${h.url_for('/')}" )
                 container_element = $("#${trans.security.encode_id( visualization.id )}");
 
             $(function() {
@@ -90,9 +89,9 @@
                                                 vis_id: "${config.get('vis_id')}", 
                                                 dbkey: "${config.get('dbkey')}"
                                              }, 
-                                             ${ h.to_json_string( config.get( 'viewport', dict() ) ) },
-                                             ${ h.to_json_string( config['tracks'] ) },
-                                             ${ h.to_json_string( config.get('bookmarks') ) }
+                                             ${ h.dumps( config.get( 'viewport', dict() ) ) },
+                                             ${ h.dumps( config['tracks'] ) },
+                                             ${ h.dumps( config.get('bookmarks') ) }
                                              );
                 
                 // Set up keyboard navigation.

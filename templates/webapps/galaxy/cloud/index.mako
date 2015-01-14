@@ -218,7 +218,7 @@ Credentials section of the AWS Console</a>.  </div>
                         </div>
 
                         %if share_string:
-                            <input type='hidden' name='share_string' value='${share_string}'/>
+                            <input id="dbremove_share_string" type='hidden' name='share_string' value='${share_string | h}'/>
                         %else:
                         <!-- DBEDIT temporary hide share string due to it being broken on the cloudman end -->
                         <div class="form-row" style="display:none;">
@@ -228,19 +228,19 @@ Credentials section of the AWS Console</a>.  </div>
                         %endif
 
                         %if ami:
-                            <input type='hidden' name='ami' value='${ami}'/>
+                            <input type='hidden' name='ami' value='${ami | h}'/>
                         %endif
 
                         %if bucket_default:
-                            <input type='hidden' name='bucket_default' value='${bucket_default}'/>
+                            <input type='hidden' name='bucket_default' value='${bucket_default | h}'/>
                         %endif
 
                         <div class="form-row">
                             <label for="id_instance_type">Instance Type</label>
                             <select name="instance_type" id="id_instance_type">
-                                <option value="m1.large">Large</option>
-                                <option value="m1.xlarge">Extra Large</option>
-                                <option value="m2.4xlarge">High-Memory Quadruple Extra Large</option>
+                            %for (itype, description) in instance_types:
+                                <option value="${itype}">${description}</option>
+                            %endfor
                             </select>
                         </div>
                         <div class="form-row">

@@ -5,11 +5,10 @@ from galaxy import util
 from galaxy import web
 from galaxy import exceptions
 from galaxy.web import _future_expose_api as expose_api
-from galaxy.dataset_collections.util import api_payload_to_create_params
-from galaxy.dataset_collections.util import dictify_dataset_collection_instance
 from galaxy.web.base.controller import BaseAPIController, UsesLibraryMixin, UsesLibraryMixinItems
 from galaxy.web.base.controller import UsesHistoryDatasetAssociationMixin
 from galaxy.web.base.controller import HTTPBadRequest, url_for
+from galaxy.managers.collections_util import api_payload_to_create_params, dictify_dataset_collection_instance
 from galaxy.model import ExtendedMetadata, ExtendedMetadataIndex
 from sqlalchemy.orm.exc import MultipleResultsFound
 from sqlalchemy.orm.exc import NoResultFound
@@ -147,17 +146,21 @@ class LibraryContentsController( BaseAPIController, UsesLibraryMixin, UsesLibrar
         the HDA's encoded id in ``from_hda_id`` (and optionally ``ldda_message``).
 
         :type   library_id: str
-        :param  library_id: encoded id string of the library that contains this item
+        :param  library_id: encoded id string of the library where to create the new item
         :type   payload:    dict
         :param  payload:    dictionary structure containing:
 
             * folder_id:    the parent folder of the new item
-            * create_type:  the type of item to create ('file' or 'folder')
+            * create_type:  the type of item to create ('file', 'folder' or 'collection')
             * from_hda_id:  (optional) the id of an accessible HDA to copy into the
                 library
             * ldda_message: (optional) the new message attribute of the LDDA created
             * extended_metadata: (optional) dub-dictionary containing any extended
                 metadata to associate with the item
+            * link_data_only: (optional) either 'copy_files' (default) or 'link_to_files'
+            * upload_option: (optional) one of 'upload_file' (default), 'upload_directory' or 'upload_paths'
+            * server_dir: (optional) only if upload_option is 'upload_directory'
+            * filesystem_paths: (optional) only if upload_option is 'upload_paths' and the user is an admin
 
         :rtype:     dict
         :returns:   a dictionary containing the id, name,
@@ -218,11 +221,9 @@ class LibraryContentsController( BaseAPIController, UsesLibraryMixin, UsesLibrar
             return output
         else:
             rval = []
-            for k, v in output.items():
+            for v in output.values():
                 if ex_meta_payload is not None:
-                    """
-                    If there is extended metadata, store it, attach it to the dataset, and index it
-                    """
+                    # If there is extended metadata, store it, attach it to the dataset, and index it
                     ex_meta = ExtendedMetadata(ex_meta_payload)
                     trans.sa_session.add( ex_meta )
                     v.extended_metadata = ex_meta
@@ -344,9 +345,9 @@ class LibraryContentsController( BaseAPIController, UsesLibraryMixin, UsesLibrar
             trans.sa_session.flush()
 
     def __decode_library_content_id( self, trans, content_id ):
-        if ( len( content_id ) % 16 == 0 ):
+        if len( content_id ) % 16 == 0:
             return 'LibraryDataset', content_id
-        elif ( content_id.startswith( 'F' ) ):
+        elif content_id.startswith( 'F' ):
             return 'LibraryFolder', content_id[ 1: ]
         else:
             raise HTTPBadRequest( 'Malformed library content id ( %s ) specified, unable to decode.' % str( content_id ) )

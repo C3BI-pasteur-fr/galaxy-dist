@@ -9,10 +9,10 @@ from paste.httpexceptions import HTTPNotFound, HTTPBadRequest
 from galaxy import model, web
 from galaxy.model.item_attrs import UsesAnnotations, UsesItemRatings
 from galaxy.web.base.controller import BaseUIController, SharableMixin, UsesVisualizationMixin
-from galaxy.web.framework.helpers import time_ago, grids
+from galaxy.web.framework.helpers import time_ago, grids, escape
 from galaxy import util
 from galaxy.datatypes.interval import Bed
-from galaxy.util.json import from_json_string
+from galaxy.util.json import loads
 from galaxy.util.sanitize_html import sanitize_html
 from galaxy.util import bunch
 from galaxy import util
@@ -123,7 +123,7 @@ class DbKeyColumn( grids.GridColumn ):
         #                        or_( "metadata like '%%\"dbkey\": [\"?\"]%%'", "metadata like '%%\"dbkey\": \"?\"%%'" ) \
         #                        )
         #                    )
-        
+
 
 class HistoryColumn( grids.GridColumn ):
     """ Column for filtering by history id. """
@@ -360,7 +360,7 @@ class VisualizationController( BaseUIController, SharableMixin, UsesAnnotations,
     @web.expose
     @web.require_login( "use Galaxy visualizations", use_panels=True )
     def list( self, trans, *args, **kwargs ):
-        
+
         # Handle operation
         if 'operation' in kwargs and 'id' in kwargs:
             session = trans.sa_session
@@ -388,7 +388,7 @@ class VisualizationController( BaseUIController, SharableMixin, UsesAnnotations,
         kwargs[ 'embedded' ] = True
         grid = self._user_list_grid( trans, *args, **kwargs )
         return trans.fill_template( "visualization/list.mako", embedded_grid=grid, shared_by_others=shared_by_others )
-    
+
     #
     # -- Functions for operating on visualizations. --
     #
@@ -459,7 +459,7 @@ class VisualizationController( BaseUIController, SharableMixin, UsesAnnotations,
         # Set referer message.
         referer = trans.request.referer
         if referer is not "":
-            referer_message = "<a href='%s'>return to the previous page</a>" % referer
+            referer_message = "<a href='%s'>return to the previous page</a>" % escape(referer)
         else:
             referer_message = "<a href='%s'>go to Galaxy's start page</a>" % web.url_for( '/' )
 
@@ -535,14 +535,14 @@ class VisualizationController( BaseUIController, SharableMixin, UsesAnnotations,
                                     .first()
             if not other:
                 mtype = "error"
-                msg = ( "User '%s' does not exist" % email )
+                msg = ( "User '%s' does not exist" % escape( email ) )
             elif other == trans.get_user():
                 mtype = "error"
                 msg = ( "You cannot share a visualization with yourself" )
             elif trans.sa_session.query( model.VisualizationUserShareAssociation ) \
                     .filter_by( user=other, visualization=visualization ).count() > 0:
                 mtype = "error"
-                msg = ( "Visualization already shared with '%s'" % email )
+                msg = ( "Visualization already shared with '%s'" % escape( email ) )
             else:
                 share = model.VisualizationUserShareAssociation()
                 share.visualization = visualization
@@ -551,7 +551,9 @@ class VisualizationController( BaseUIController, SharableMixin, UsesAnnotations,
                 session.add( share )
                 self.create_item_slug( session, visualization )
                 session.flush()
-                trans.set_message( "Visualization '%s' shared with user '%s'" % ( visualization.title, other.email ) )
+                viz_title = escape( visualization.title )
+                other_email = escape( other.email )
+                trans.set_message( "Visualization '%s' shared with user '%s'" % ( viz_title, other_email ) )
                 return trans.response.send_redirect( web.url_for(controller='visualization', action='sharing', id=id ) )
         return trans.fill_template( "/ind_share_base.mako",
                                     message = msg,
@@ -585,7 +587,7 @@ class VisualizationController( BaseUIController, SharableMixin, UsesAnnotations,
                 user_item_rating = 0
         ave_item_rating, num_ratings = self.get_ave_item_rating_data( trans.sa_session, visualization )
 
-        # Display.
+        # Fork to template based on visualization.type (registry or builtin).
         if( ( trans.app.visualizations_registry and visualization.type in trans.app.visualizations_registry.plugins )
         and ( visualization.type not in trans.app.visualizations_registry.BUILT_IN_VISUALIZATIONS ) ):
             # if a registry visualization, load a version of display.mako that will load the vis into an iframe :(
@@ -673,7 +675,7 @@ class VisualizationController( BaseUIController, SharableMixin, UsesAnnotations,
         visualization is created. Returns JSON of visualization.
         """
         # Get visualization attributes from kwargs or from config.
-        vis_config = from_json_string( vis_json )
+        vis_config = loads( vis_json )
         vis_type = type or vis_config[ 'type' ]
         vis_id = id or vis_config.get( 'id', None )
         vis_title = title or vis_config.get( 'title', None )
@@ -747,7 +749,7 @@ class VisualizationController( BaseUIController, SharableMixin, UsesAnnotations,
             if type is None or config is None:
                 return HTTPBadRequest( 'A visualization type and config are required to save a visualization' )
             if isinstance( config, basestring ):
-                config = from_json_string( config )
+                config = loads( config )
             title = title or DEFAULT_VISUALIZATION_NAME
 
             #TODO: allow saving to (updating) a specific revision - should be part of UsesVisualization
@@ -793,7 +795,7 @@ class VisualizationController( BaseUIController, SharableMixin, UsesAnnotations,
         # validate name vs. registry
         registry = trans.app.visualizations_registry
         if not registry:
-            raise HTTPNotFound( 'No visualization registry (possibly disabled in universe_wsgi.ini)' )
+            raise HTTPNotFound( 'No visualization registry (possibly disabled in galaxy.ini)' )
         if visualization_name not in registry.plugins:
             raise HTTPNotFound( 'Unknown or invalid visualization: ' + visualization_name )
             # or redirect to list?
@@ -976,7 +978,7 @@ class VisualizationController( BaseUIController, SharableMixin, UsesAnnotations,
             viz_config = {
                 'dataset_id': dataset_id,
                 'tool_id': job.tool_id,
-                'regions': from_json_string( regions )
+                'regions': loads( regions )
             }
 
         # Add tool, dataset attributes to config based on id.
